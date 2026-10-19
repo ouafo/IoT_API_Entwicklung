@@ -143,8 +143,3 @@ docker inspect kicagem_api --format='{{.State.Health.Status}}'
 4. **API skalieren** (mehrere Instanzen)
 5. **Logs überwachen**
 6. **Backup & Recovery** einrichten
-
-## Lizenz
-
-Dieses Projekt wurde im Rahmen meiner Bachelorarbeit an der HWG-LU erstellt und ist ausschließlich für Prüfungs-/Lehrzwecke bestimmt.
-Eine weitergehende Nutzung, Veröffentlichung oder kommerzielle Verwertung ist ohne Zustimmung der Hochschule und des Verfassers nicht gestattet.
