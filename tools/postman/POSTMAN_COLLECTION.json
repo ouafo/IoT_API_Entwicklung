@@ -1,0 +1,402 @@
+{
+  "info": {
+    "name": "KICAGEM IoT Analytics Service (Full Test Cases)",
+    "description": "Alle Erfolgs- und Fehlerfälle für KICAGEM IoT Analytics Service (Bachelorarbeit)",
+    "version": "1.0.0",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item":  [
+    {
+      "name": "Erfolgsfälle",
+      "item": [
+        {
+          "name": "Alle Räume abfragen",
+          "request":  {
+            "method": "GET",
+            "header": [
+              {
+                "key":  "Authorization",
+                "value": "Basic YWRtaW46OTg1NTg5Nzlj",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "http://127.0.0.1:8000/api/Rooms? $top=10&$skip=0",
+              "protocol": "http",
+              "host": ["127.0.0.1"],
+              "port": "8000",
+              "path": ["api", "Rooms"],
+              "query": [
+                {
+                  "key": "$top",
+                  "value": "10"
+                },
+                {
+                  "key": "$skip",
+                  "value": "0"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Einzelnen Raum abfragen",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Basic YWRtaW46OTg1NTg5Nzlj",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "http://127.0.0.1:8000/api/Rooms('A-A203')",
+              "protocol": "http",
+              "host": ["127.0.0.1"],
+              "port": "8000",
+              "path": ["api", "Rooms('A-A203')"]
+            }
+          }
+        },
+        {
+          "name": "Messwerte für einen Raum (Filter & Sortierung)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Basic YWRtaW46OTg1NTg5Nzlj",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "http://127.0.0.1:8000/api/Rooms('A-A203')/Measurements?StartDateTime=2025-01-01T00:00:00Z&EndDateTime=2025-01-31T23:59:59Z&SensorTypeCode=temperature&$filter=MeasureContent gt 22&$orderby=StartDateTime desc&$top=10&$skip=0",
+              "protocol": "http",
+              "host": ["127.0.0.1"],
+              "port": "8000",
+              "path": ["api", "Rooms('A-A203')", "Measurements"],
+              "query": [
+                {
+                  "key": "StartDateTime",
+                  "value": "2025-01-01T00:00:00Z"
+                },
+                {
+                  "key": "EndDateTime",
+                  "value": "2025-01-31T23:59:59Z"
+                },
+                {
+                  "key": "SensorTypeCode",
+                  "value": "temperature"
+                },
+                {
+                  "key": "$filter",
+                  "value": "MeasureContent gt 22"
+                },
+                {
+                  "key": "$orderby",
+                  "value": "StartDateTime desc"
+                },
+                {
+                  "key": "$top",
+                  "value": "10"
+                },
+                {
+                  "key": "$skip",
+                  "value": "0"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Messwerte ohne Filter (Basis)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Basic YWRtaW46OTg1NTg5Nzlj",
+                "type":  "text"
+              }
+            ],
+            "url": {
+              "raw": "http://127.0.0.1:8000/api/Rooms('A-A203')/Measurements?StartDateTime=2025-01-01T00:00:00Z&EndDateTime=2025-01-31T23:59:59Z&SensorTypeCode=temperature&$top=10",
+              "protocol": "http",
+              "host": ["127.0.0.1"],
+              "port": "8000",
+              "path": ["api", "Rooms('A-A203')", "Measurements"],
+              "query": [
+                {
+                  "key": "StartDateTime",
+                  "value": "2025-01-01T00:00:00Z"
+                },
+                {
+                  "key": "EndDateTime",
+                  "value": "2025-01-31T23:59:59Z"
+                },
+                {
+                  "key": "SensorTypeCode",
+                  "value": "temperature"
+                },
+                {
+                  "key": "$top",
+                  "value": "10"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "OData Metadaten abrufen",
+          "request":  {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Basic YWRtaW46OTg1NTg5Nzlj",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "http://127.0.0.1:8000/api/$metadata",
+              "protocol": "http",
+              "host": ["127.0.0.1"],
+              "port": "8000",
+              "path": ["api", "$metadata"]
+            }
+          }
+        },
+        {
+          "name": "Health Check (ohne Auth)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "http://127.0.0.1:8000/api/health",
+              "protocol": "http",
+              "host": ["127.0.0.1"],
+              "port": "8000",
+              "path": ["api", "health"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name":  "Fehlerfälle",
+      "item": [
+        {
+          "name": "Raum-Request ohne Auth",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "http://127.0.0.1:8000/api/Rooms('A-A203')",
+              "protocol": "http",
+              "host": ["127.0.0.1"],
+              "port": "8000",
+              "path": ["api", "Rooms('A-A203')"]
+            }
+          }
+        },
+        {
+          "name": "Raum-Request mit falschem Auth",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key":  "Authorization",
+                "value":  "Basic ZmFrZTpmYWxzZVBhc3N3b3J0",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "http://127.0.0.1:8000/api/Rooms('A-A203')",
+              "protocol": "http",
+              "host": ["127.0.0.1"],
+              "port": "8000",
+              "path": ["api", "Rooms('A-A203')"]
+            }
+          }
+        },
+        {
+          "name": "Messwerte OHNE StartDateTime (422 Error)",
+          "request":  {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Basic YWRtaW46OTg1NTg5Nzlj",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "http://127.0.0.1:8000/api/Rooms('A-A203')/Measurements?SensorTypeCode=temperature&$filter=MeasureContent gt 22",
+              "protocol": "http",
+              "host": ["127.0.0.1"],
+              "port": "8000",
+              "path": ["api", "Rooms('A-A203')", "Measurements"],
+              "query": [
+                {
+                  "key": "SensorTypeCode",
+                  "value": "temperature"
+                },
+                {
+                  "key":  "$filter",
+                  "value": "MeasureContent gt 22"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Messwerte mit ungültigem Datum",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Basic YWRtaW46OTg1NTg5Nzlj",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "http://127.0.0.1:8000/api/Rooms('A-A203')/Measurements?StartDateTime=abc&EndDateTime=2025-01-31T23:59:59Z",
+              "protocol": "http",
+              "host": ["127.0.0.1"],
+              "port": "8000",
+              "path": ["api", "Rooms('A-A203')", "Measurements"],
+              "query": [
+                {
+                  "key": "StartDateTime",
+                  "value": "abc"
+                },
+                {
+                  "key": "EndDateTime",
+                  "value": "2025-01-31T23:59:59Z"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Messwerte mit Start nach End",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Basic YWRtaW46OTg1NTg5Nzlj",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "http://127.0.0.1:8000/api/Rooms('A-A203')/Measurements?StartDateTime=2025-02-02T00:00:00Z&EndDateTime=2025-01-01T00:00:00Z",
+              "protocol": "http",
+              "host": ["127.0.0.1"],
+              "port": "8000",
+              "path": ["api", "Rooms('A-A203')", "Measurements"],
+              "query": [
+                {
+                  "key": "StartDateTime",
+                  "value": "2025-02-02T00:00:00Z"
+                },
+                {
+                  "key": "EndDateTime",
+                  "value": "2025-01-01T00:00:00Z"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Nicht vorhandener Raum",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key":  "Authorization",
+                "value":  "Basic YWRtaW46OTg1NTg5Nzlj",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw":  "http://127.0.0.1:8000/api/Rooms('ZZZ-123')",
+              "protocol": "http",
+              "host": ["127.0.0.1"],
+              "port": "8000",
+              "path": ["api", "Rooms('ZZZ-123')"]
+            }
+          }
+        },
+        {
+          "name": "Messwerte mit ungültigem OData-Filter",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Basic YWRtaW46OTg1NTg5Nzlj",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "http://127.0.0.1:8000/api/Rooms('A-A203')/Measurements?StartDateTime=2025-01-01T00:00:00Z&EndDateTime=2025-01-31T23:59:59Z&$filter=InvalidField gt 22",
+              "protocol": "http",
+              "host": ["127.0.0.1"],
+              "port":  "8000",
+              "path": ["api", "Rooms('A-A203')", "Measurements"],
+              "query": [
+                {
+                  "key": "StartDateTime",
+                  "value": "2025-01-01T00:00:00Z"
+                },
+                {
+                  "key": "EndDateTime",
+                  "value":  "2025-01-31T23:59:59Z"
+                },
+                {
+                  "key": "$filter",
+                  "value": "InvalidField gt 22"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Messwerte:  OData $top zu hoch",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Basic YWRtaW46OTg1NTg5Nzlj",
+                "type": "text"
+              }
+            ],
+            "url":  {
+              "raw": "http://127.0.0.1:8000/api/Rooms('A-A203')/Measurements?StartDateTime=2025-01-01T00:00:00Z&EndDateTime=2025-01-31T23:59:59Z&$top=10001",
+              "protocol": "http",
+              "host": ["127.0.0.1"],
+              "port": "8000",
+              "path": ["api", "Rooms('A-A203')", "Measurements"],
+              "query": [
+                {
+                  "key": "StartDateTime",
+                  "value": "2025-01-01T00:00:00Z"
+                },
+                {
+                  "key": "EndDateTime",
+                  "value": "2025-01-31T23:59:59Z"
+                },
+                {
+                  "key": "$top",
+                  "value":  "10001"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

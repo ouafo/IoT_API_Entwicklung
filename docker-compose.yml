@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  # FastAPI Application
+  api:
+    build: .
+    image: kicagem-api:latest
+    container_name: kicagem_api
+    environment:
+      DB_HOST: iwilsv-1.campus.fh-ludwigshafen.de
+      DB_PORT: 5432
+      DB_USER: ba_thesis
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_NAME: kicagem_db
+      DB_SCHEMA: ${DB_SCHEMA:-public}
+      BASIC_AUTH_USERNAME: ${BASIC_AUTH_USERNAME:-admin}
+      BASIC_AUTH_PASSWORD: ${BASIC_AUTH_PASSWORD:-98558979c}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./logs:/app/logs
+    networks:
+      - kicagem_network
+
+networks:
+  kicagem_network:
