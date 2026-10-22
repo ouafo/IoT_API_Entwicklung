@@ -4,6 +4,8 @@ import time
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
+from app.api import routes, weather_routes #"neuer import" 
+
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from starlette.requests import Request
@@ -49,6 +51,7 @@ def create_app() -> FastAPI:
     )
     
     app.include_router(routes.router)
+    app.include_router(weather_routes.router)
 
     @app.middleware("http")
     async def log_requests(request:  Request, call_next):
