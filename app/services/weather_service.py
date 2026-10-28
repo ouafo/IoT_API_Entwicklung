@@ -16,17 +16,16 @@ from app.models.weather import (
 )
 
 
+
 SENSOR_COLUMNS = {
     "temperature": ("temperature", "temperature_unit"),
     "humidity": ("humidity", "humidity_unit"),
     "wind_direction": ("wind_direction", "wind_direction_unit"),
     "wind_speed": ("wind_speed", "wind_speed_unit"),
-    "barometric_pressure": (
-        "barometric_pressure",
-        "barometric_pressure_unit",
-    ),
-    "rainfall": ("rainfall", "rainfall_unit"),
+    "barometric_pressure": ("pressure", "pressure_unit"),
+    "rainfall": ("rainfall_total", "rainfall_total_unit"),
 }
+
 
 FILTER_COLUMNS = {
     "BuildingID": '"BuildingID"',
@@ -157,7 +156,7 @@ async def get_weather_measurements(
                 WHERE building = %s
                   AND "start" >= %s
                   AND "stop" <= %s
-                  AND {value_column} IS NOT NULL
+                  
                 """
             )
 

@@ -10,7 +10,7 @@ class WeatherMeasurement(BaseModel):
     SensorTypeCode: str
     StartDateTime: datetime
     EndDateTime: datetime
-    MeasureContent: float
+    MeasureContent: Optional[float] = None
     MeasureUnitCode: Optional[str] = None
 
 

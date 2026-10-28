@@ -57,7 +57,7 @@ WeatherSensorType = Literal[
 @router.get(
     "/WeatherMeasurements/{BuildingID}",
     response_model=WeatherMeasurementResponse,
-    response_model_exclude_none=True,
+    response_model_exclude_none=False,
     tags=["Weather"],
     summary="Retrieve weather station measurements",
 )
