@@ -1,7 +1,7 @@
 {
     "database_table": "public.room_climate",
     "input_csv_used": false,
-    "training_timestamp": "2026-11-08T12:25:38.360343+00:00",
+    "training_timestamp": "2026-11-08T17:27:34.396256+00:00",
     "rooms_processed": 9,
     "sensors_processed": [
         "co2",

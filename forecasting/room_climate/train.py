@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import warnings
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,10 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 from psycopg.rows import dict_row
+
+# Projekt-Root in den Python-Modulpfad aufnehmen
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(PROJECT_ROOT))
 
 from app.database.connection import get_conn, put_conn
 
