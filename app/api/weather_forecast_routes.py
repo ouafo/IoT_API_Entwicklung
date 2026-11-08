@@ -61,7 +61,7 @@ def get_latest_weather_forecasts(
     BuildingID: str,
     SensorTypeCode: Optional[str] = Query(
         default=None,
-        description="Filter by sensor type, e.g. temperature or humidity.",
+        description="Filter by sensor type, e.g. temperature, humidity, wind_speed, barometric_pressure, rain_fall.",
     ),
     HorizonMinutes: Optional[int] = Query(
         default=None,
@@ -101,7 +101,7 @@ def get_weather_forecasts(
     BuildingID: str,
     SensorTypeCode: Optional[str] = Query(
         default=None,
-        description="Filter by sensor type, e.g. temperature or humidity.",
+        description="Filter by sensor type, e.g. temperature, humidity, wind_speed, barometric_pressure, rain_fall.",
     ),
     HorizonMinutes: Optional[int] = Query(
         default=None,
