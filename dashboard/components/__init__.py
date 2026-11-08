@@ -1,0 +1,1 @@
+# Gemeinsame Komponenten für das KICaGEM-Dashboard.

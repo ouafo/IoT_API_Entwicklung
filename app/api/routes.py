@@ -14,7 +14,10 @@ from app.logger import logger
 from app.services.measurement_service import get_measurements, get_all_rooms
 from app.exceptions import InvalidDatetimeException, TimeRangeException, FilterException
 
-router = APIRouter(prefix=settings.API_PREFIX)
+router = APIRouter(
+    prefix=settings.API_PREFIX,
+    tags=["Building & Room Management"]
+)
 
 ALLOWED_FILTER_COLUMNS = [
     "RoomID", "BuildingID", "SensorTypeCode",
@@ -46,7 +49,7 @@ def _parse_iso8601(dt_str: str) -> datetime:
         raise InvalidDatetimeException(dt_str, "datetime")
 
 
-@router.get("/health")
+@router.get("/health", tags=["System & Monitoring"])
 async def health_check():
     """Health check endpoint with database connectivity test."""
     db_status = "unknown"
@@ -255,7 +258,7 @@ async def get_room_measurements(
     )
 
 
-@router.get("/$metadata")
+@router.get("/$metadata", tags=["API Metadata"])
 async def get_metadata(_user: str = Depends(verify_basic_auth)):
     """OData CSDL metadata (Entity Data Model)."""
     xml = f"""<? xml version="1.0" encoding="UTF-8"?>

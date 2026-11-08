@@ -1,0 +1,7 @@
+{
+    "total_rooms": 14,
+    "eligible_rooms": 9,
+    "insufficient_data_rooms": 5,
+    "trained_room_horizon_pairs": 36,
+    "generated_forecasts": 36
+}
