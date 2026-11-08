@@ -1,15 +1,57 @@
-room_id,total_intervals,valid_intervals,completeness_percent,last_measurement,data_age_minutes,status
-A-A203,83674,27716,33.12,2025-05-15 11:30:00+00:00,779295.0,insufficient_data
-A-A304,85120,77044,90.51,2026-11-07 15:45:00+00:00,0.0,eligible
-A-A305,85120,76750,90.17,2026-11-07 15:45:00+00:00,0.0,eligible
-B-B0.009,85120,8320,9.77,2026-11-07 15:45:00+00:00,0.0,insufficient_data
-C-C1.001,85120,76653,90.05,2026-11-07 15:45:00+00:00,0.0,eligible
-C-C1.003,85120,76590,89.98,2026-11-07 15:45:00+00:00,0.0,eligible
-C-C1.005,85120,76821,90.25,2026-11-07 15:45:00+00:00,0.0,eligible
-C-C1.006,85120,76452,89.82,2026-11-07 15:45:00+00:00,0.0,eligible
-C-C2.001,85120,77146,90.63,2026-11-07 15:45:00+00:00,0.0,eligible
-C-C2.005,85120,77152,90.64,2026-11-07 15:45:00+00:00,0.0,eligible
-C-C2.009,85120,77270,90.78,2026-11-07 15:45:00+00:00,0.0,eligible
-C-C2.163,85120,6845,8.04,2026-11-07 15:45:00+00:00,0.0,insufficient_data
-M-MML1,85120,1654,1.94,2026-11-07 15:45:00+00:00,0.0,insufficient_data
-M-MML2,85120,1834,2.15,2026-11-07 15:45:00+00:00,0.0,insufficient_data
+room_id,sensor_type,valid_samples,total_intervals,completeness_percent,latest_data_age_minutes,eligible
+A-A203,temperature,27716,83674,33.12,780465.0,False
+A-A203,humidity,27716,83674,33.12,780465.0,False
+A-A203,co2,27716,83674,33.12,780465.0,False
+A-A203,light,27716,83674,33.12,780465.0,False
+A-A304,temperature,77121,85198,90.52,0.0,True
+A-A304,humidity,77121,85198,90.52,0.0,True
+A-A304,co2,77119,85198,90.52,0.0,True
+A-A304,light,77121,85198,90.52,0.0,True
+A-A305,temperature,76827,85198,90.17,0.0,True
+A-A305,humidity,76827,85198,90.17,0.0,True
+A-A305,co2,76825,85198,90.17,0.0,True
+A-A305,light,76827,85198,90.17,0.0,True
+B-B0.009,temperature,8398,85198,9.86,0.0,False
+B-B0.009,humidity,8398,85198,9.86,0.0,False
+B-B0.009,co2,8398,85198,9.86,0.0,False
+B-B0.009,light,8398,85198,9.86,0.0,False
+C-C1.001,temperature,76731,85198,90.06,0.0,True
+C-C1.001,humidity,76731,85198,90.06,0.0,True
+C-C1.001,co2,76731,85198,90.06,0.0,True
+C-C1.001,light,76731,85198,90.06,0.0,True
+C-C1.003,temperature,76668,85198,89.99,0.0,True
+C-C1.003,humidity,76668,85198,89.99,0.0,True
+C-C1.003,co2,76667,85198,89.99,0.0,True
+C-C1.003,light,76668,85198,89.99,0.0,True
+C-C1.005,temperature,76899,85198,90.26,0.0,True
+C-C1.005,humidity,76899,85198,90.26,0.0,True
+C-C1.005,co2,76899,85198,90.26,0.0,True
+C-C1.005,light,76899,85198,90.26,0.0,True
+C-C1.006,temperature,76530,85198,89.83,0.0,True
+C-C1.006,humidity,76530,85198,89.83,0.0,True
+C-C1.006,co2,76530,85198,89.83,0.0,True
+C-C1.006,light,76530,85198,89.83,0.0,True
+C-C2.001,temperature,77224,85198,90.64,0.0,True
+C-C2.001,humidity,77224,85198,90.64,0.0,True
+C-C2.001,co2,77224,85198,90.64,0.0,True
+C-C2.001,light,77224,85198,90.64,0.0,True
+C-C2.005,temperature,77230,85198,90.65,0.0,True
+C-C2.005,humidity,77230,85198,90.65,0.0,True
+C-C2.005,co2,77230,85198,90.65,0.0,True
+C-C2.005,light,77230,85198,90.65,0.0,True
+C-C2.009,temperature,77348,85198,90.79,0.0,True
+C-C2.009,humidity,77348,85198,90.79,0.0,True
+C-C2.009,co2,77348,85198,90.79,0.0,True
+C-C2.009,light,77348,85198,90.79,0.0,True
+C-C2.163,temperature,6923,85198,8.13,0.0,False
+C-C2.163,humidity,6923,85198,8.13,0.0,False
+C-C2.163,co2,6923,85198,8.13,0.0,False
+C-C2.163,light,6923,85198,8.13,0.0,False
+M-MML1,temperature,1732,85198,2.03,0.0,False
+M-MML1,humidity,1732,85198,2.03,0.0,False
+M-MML1,co2,1732,85198,2.03,0.0,False
+M-MML1,light,1732,85198,2.03,0.0,False
+M-MML2,temperature,1912,85198,2.24,0.0,False
+M-MML2,humidity,1912,85198,2.24,0.0,False
+M-MML2,co2,1912,85198,2.24,0.0,False
+M-MML2,light,1912,85198,2.24,0.0,False

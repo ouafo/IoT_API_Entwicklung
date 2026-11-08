@@ -3,18 +3,22 @@
 Weather forecasting pipeline for KICaGEM.
 
 - Loads weather measurements from PostgreSQL.
-- Cleans implausible sensor values without modifying the database.
+- Cleans implausible sensor values.
+- Handles short sensor failures using sensor-specific imputation.
+- Keeps original measurements separate from imputed features.
 - Uses interval end timestamps as observation availability times.
 - Evaluates Random Forest against a persistence baseline.
 - Uses chronological train/validation/test splits.
 - Handles wind direction with circular regression.
-- Trains models in memory and discards them after forecasting.
+- Trains models in memory.
 - Saves evaluation results and forecasts as CSV files.
+- Protects existing forecasts against incomplete training runs.
 """
 
 from pathlib import Path
 import sys
 import math
+import os
 
 import numpy as np
 import pandas as pd
@@ -45,6 +49,14 @@ RESULT_DIR.mkdir(parents=True, exist_ok=True)
 
 FREQUENCY = "15min"
 MINIMUM_SAMPLES = 2000
+
+# Maximum number of consecutive missing intervals
+# that may be interpolated.
+MAX_INTERPOLATION_GAP = 2
+
+# Minimum proportion of available observations
+# required for rolling features.
+ROLLING_MINIMUM_RATIO = 0.8
 
 HORIZONS = {
     1: 15,
@@ -94,7 +106,7 @@ WEATHER_VARIABLES = {
 
 
 # Plausibility limits.
-# These are data-cleaning assumptions, not sensor specifications.
+# These are cleaning assumptions, not sensor specifications.
 VALID_RANGES = {
     "temperature": (-40.0, 60.0),
     "humidity": (0.0, 100.0),
@@ -133,7 +145,9 @@ def load_weather_data():
     conn = get_conn()
 
     try:
+
         with conn.cursor() as cursor:
+
             cursor.execute(SQL_QUERY)
             rows = cursor.fetchall()
 
@@ -149,7 +163,10 @@ def load_weather_data():
             "rainfall_total",
         ]
 
-        df = pd.DataFrame(rows, columns=columns)
+        df = pd.DataFrame(
+            rows,
+            columns=columns,
+        )
 
         print(f"\nLoaded records: {len(df):,}")
 
@@ -166,17 +183,19 @@ def load_weather_data():
             utc=True,
         )
 
-        for column in WEATHER_VARIABLES.values():
-            name = column["column"]
+        for config in WEATHER_VARIABLES.values():
 
-            df[name] = pd.to_numeric(
-                df[name],
+            column = config["column"]
+
+            df[column] = pd.to_numeric(
+                df[column],
                 errors="coerce",
             )
 
         return df
 
     finally:
+
         put_conn(conn)
 
 
@@ -189,14 +208,17 @@ def clean_weather_data(df):
     df = df.copy()
 
     print("\nDATA QUALITY CHECK")
-    print("-" * 60)
+    print("-" * 70)
 
     original_count = len(df)
 
-    # Remove invalid intervals.
+    # --------------------------------------------------
+    # A. INVALID INTERVALS
+    # --------------------------------------------------
+
     valid_intervals = (
-        df["stop"].notna()
-        & df["start"].notna()
+        df["start"].notna()
+        & df["stop"].notna()
         & (df["stop"] > df["start"])
     )
 
@@ -207,74 +229,73 @@ def clean_weather_data(df):
         original_count - len(df),
     )
 
+    # --------------------------------------------------
+    # B. NON-FINITE VALUES
+    # --------------------------------------------------
+
+    for config in WEATHER_VARIABLES.values():
+
+        column = config["column"]
+
+        df[column] = df[column].replace(
+            [np.inf, -np.inf],
+            np.nan,
+        )
+
+    # --------------------------------------------------
+    # C. PLAUSIBILITY CHECKS
+    # --------------------------------------------------
+
+    invalid_masks = {}
+
+    for column, (minimum, maximum) in VALID_RANGES.items():
+
+        invalid_mask = (
+            (df[column] < minimum)
+            | (df[column] > maximum)
+        )
+
+        invalid_masks[column] = invalid_mask.fillna(False)
+
     # Detect correlated sensor transmission errors.
-    pressure_invalid = (
-        (df["pressure"] < 850)
-        | (df["pressure"] > 1100)
+    correlated_error = pd.Series(
+        False,
+        index=df.index,
     )
 
-    wind_invalid = (
-        (df["wind_speed"] < 0)
-        | (df["wind_speed"] > 75)
-    )
+    for mask in invalid_masks.values():
 
-    humidity_invalid = (
-        (df["humidity"] < 0)
-        | (df["humidity"] > 100)
-    )
+        correlated_error |= mask
 
-    rainfall_invalid = (
-        (df["rainfall_total"] < 0)
-        | (df["rainfall_total"] > 100)
-    )
+    # --------------------------------------------------
+    # D. MASK INVALID SENSOR VALUES
+    # --------------------------------------------------
 
-    direction_invalid = (
-        (df["wind_direction"] < 0)
-        | (df["wind_direction"] >= 360)
-    )
+    for column, invalid_mask in invalid_masks.items():
 
-    correlated_error = (
-        pressure_invalid
-        | wind_invalid
-        | humidity_invalid
-        | rainfall_invalid
-        | direction_invalid
-    )
+        invalid_count = int(
+            invalid_mask.sum()
+        )
 
-    # Individual measurement cleaning.
-    cleaning_rules = {
-        "temperature": (
-            (df["temperature"] < -40)
-            | (df["temperature"] > 60)
-        ),
-        "humidity": humidity_invalid,
-        "pressure": pressure_invalid,
-        "wind_speed": wind_invalid,
-        "rainfall_total": rainfall_invalid,
-        "wind_direction": direction_invalid,
-    }
-
-    for column, invalid_mask in cleaning_rules.items():
-
-        invalid_count = int(invalid_mask.sum())
-
-        df.loc[invalid_mask, column] = np.nan
+        df.loc[
+            invalid_mask,
+            column,
+        ] = np.nan
 
         print(
             f"{column}: {invalid_count} invalid values"
         )
 
-    # -0.1 occurs as a repeated technical value
-    # in records where other sensor channels also fail.
-    # We only mask it when a correlated error is present.
+    # --------------------------------------------------
+    # E. TECHNICAL SENTINEL VALUES
+    # --------------------------------------------------
+
+    # -0.1 occurs as a technical value during
+    # correlated transmission errors.
+
     temperature_sentinel = (
         correlated_error
         & (df["temperature"] == -0.1)
-    )
-
-    direction_sentinel = (
-        correlated_error
-        & (df["wind_direction"] == -0.1)
     )
 
     df.loc[
@@ -282,23 +303,37 @@ def clean_weather_data(df):
         "temperature",
     ] = np.nan
 
-    df.loc[
-        direction_sentinel,
-        "wind_direction",
-    ] = np.nan
-
     print(
         "Additional temperature sentinels:",
         int(temperature_sentinel.sum()),
     )
 
-    print(
-        "Additional wind direction sentinels:",
-        int(direction_sentinel.sum()),
-    )
+    # Normalize valid 360-degree measurements.
+    df.loc[
+        df["wind_direction"] == 360,
+        "wind_direction",
+    ] = 0.0
+
+    # --------------------------------------------------
+    # F. MISSING-VALUE REPORT
+    # --------------------------------------------------
+
+    print("\nMISSING VALUES AFTER CLEANING")
+
+    for variable, config in WEATHER_VARIABLES.items():
+
+        column = config["column"]
+
+        missing = int(
+            df[column].isna().sum()
+        )
+
+        print(
+            f"{variable}: {missing} missing values"
+        )
 
     print(
-        "Records with correlated sensor errors:",
+        "\nRecords with correlated sensor errors:",
         int(correlated_error.sum()),
     )
 
@@ -311,7 +346,111 @@ def clean_weather_data(df):
 
 
 # ==================================================
-# 5. FEATURE ENGINEERING
+# 5. MISSING-VALUE IMPUTATION
+# ==================================================
+
+def interpolate_short_gaps(
+    series,
+    limit=MAX_INTERPOLATION_GAP,
+):
+    """
+    Interpolate only internal gaps containing
+    at most 'limit' consecutive missing intervals.
+
+    Leading gaps, trailing gaps and longer outages
+    remain NaN.
+
+    The original measurement series is never modified.
+    """
+
+    series = series.copy()
+
+    missing = series.isna()
+
+    if not missing.any():
+        return series
+
+    # Identify consecutive missing-value groups.
+    groups = (
+        missing.ne(
+            missing.shift(fill_value=False)
+        ).cumsum()
+    )
+
+    gap_lengths = (
+        missing.groupby(groups)
+        .transform("sum")
+    )
+
+    # Only short gaps are eligible.
+    eligible_missing = (
+        missing
+        & (gap_lengths <= limit)
+    )
+
+    interpolated = series.interpolate(
+        method="time",
+        limit_area="inside",
+    )
+
+    # Preserve long gaps and boundary gaps.
+    result = series.copy()
+
+    result.loc[eligible_missing] = (
+        interpolated.loc[eligible_missing]
+    )
+
+    return result
+
+
+def interpolate_wind_direction(series):
+    """
+    Circular interpolation of wind direction.
+
+    Example:
+    359 degrees -> missing -> 1 degree
+
+    The interpolated value should be close to 0 degrees,
+    not 180 degrees.
+    """
+
+    radians = np.deg2rad(series)
+
+    sin_values = pd.Series(
+        np.sin(radians),
+        index=series.index,
+    )
+
+    cos_values = pd.Series(
+        np.cos(radians),
+        index=series.index,
+    )
+
+    sin_values = interpolate_short_gaps(
+        sin_values
+    )
+
+    cos_values = interpolate_short_gaps(
+        cos_values
+    )
+
+    magnitude = np.sqrt(
+        sin_values ** 2 + cos_values ** 2
+    )
+
+    # Avoid unstable normalization.
+    magnitude = magnitude.where(
+        magnitude > 1e-8
+    )
+
+    sin_values = sin_values / magnitude
+    cos_values = cos_values / magnitude
+
+    return sin_values, cos_values
+
+
+# ==================================================
+# 6. FEATURE ENGINEERING
 # ==================================================
 
 def add_time_features(df):
@@ -345,7 +484,26 @@ def add_time_features(df):
     return df
 
 
-def prepare_weather_series(building_df, variable):
+def get_rolling_min_periods(window):
+    """
+    Calculate the minimum number of valid observations
+    required for a rolling feature.
+
+    At least 80 percent of the window must be available.
+    """
+
+    return max(
+        1,
+        math.ceil(
+            window * ROLLING_MINIMUM_RATIO
+        ),
+    )
+
+
+def prepare_weather_series(
+    building_df,
+    variable,
+):
 
     df = building_df.copy()
 
@@ -356,35 +514,81 @@ def prepare_weather_series(building_df, variable):
 
     source_column = WEATHER_VARIABLES[variable]["column"]
 
+    # --------------------------------------------------
+    # A. RESAMPLING
+    # --------------------------------------------------
+
+    raw = df[source_column].resample(
+        FREQUENCY
+    ).mean()
+
+    missing_before = int(
+        raw.isna().sum()
+    )
+
+    # --------------------------------------------------
+    # B. SENSOR-SPECIFIC IMPUTATION
+    # --------------------------------------------------
+
+    result = pd.DataFrame(
+        index=raw.index
+    )
+
     if variable == "wind_direction":
 
-        radians = np.deg2rad(
-            df[source_column]
+        # Original circular target components.
+        radians = np.deg2rad(raw)
+
+        target_sin = pd.Series(
+            np.sin(radians),
+            index=raw.index,
         )
 
-        df["_sin"] = np.sin(radians)
-        df["_cos"] = np.cos(radians)
+        target_cos = pd.Series(
+            np.cos(radians),
+            index=raw.index,
+        )
 
-        df = df[["_sin", "_cos"]].resample(
-            FREQUENCY
-        ).mean()
+        # Interpolate only short gaps for features.
+        feature_sin, feature_cos = (
+            interpolate_wind_direction(raw)
+        )
 
-        df["target_sin"] = df["_sin"]
-        df["target_cos"] = df["_cos"]
+        result["target_sin"] = target_sin
+        result["target_cos"] = target_cos
+
+        result["feature_sin"] = feature_sin
+        result["feature_cos"] = feature_cos
+
+        missing_after = int(
+            result["feature_sin"].isna().sum()
+        )
 
     else:
 
-        df = df[[source_column]].resample(
-            FREQUENCY
-        ).mean()
+        # Original observations remain untouched.
+        result["target"] = raw
 
-        df = df.rename(
-            columns={
-                source_column: "target"
-            }
+        # Imputed values are only used for features.
+        result["feature_source"] = (
+            interpolate_short_gaps(raw)
         )
 
-    df = add_time_features(df)
+        missing_after = int(
+            result["feature_source"].isna().sum()
+        )
+
+    print(
+        f"Missing values [{variable}]: "
+        f"{missing_before} before, "
+        f"{missing_after} after imputation"
+    )
+
+    # --------------------------------------------------
+    # C. TIME FEATURES
+    # --------------------------------------------------
+
+    result = add_time_features(result)
 
     feature_columns = [
         "hour",
@@ -397,20 +601,24 @@ def prepare_weather_series(building_df, variable):
         "weekday_cos",
     ]
 
+    # --------------------------------------------------
+    # D. LAG AND ROLLING FEATURES
+    # --------------------------------------------------
+
     if variable == "wind_direction":
 
-        source_columns = [
-            "target_sin",
-            "target_cos",
-        ]
-
-        for source in source_columns:
+        for source in [
+            "feature_sin",
+            "feature_cos",
+        ]:
 
             for lag in FEATURE_LAGS:
 
                 name = f"{source}_lag_{lag}"
 
-                df[name] = df[source].shift(lag)
+                result[name] = (
+                    result[source].shift(lag)
+                )
 
                 feature_columns.append(name)
 
@@ -418,9 +626,16 @@ def prepare_weather_series(building_df, variable):
 
                 name = f"{source}_rolling_{window}"
 
-                df[name] = (
-                    df[source]
-                    .rolling(window)
+                min_periods = get_rolling_min_periods(
+                    window
+                )
+
+                result[name] = (
+                    result[source]
+                    .rolling(
+                        window,
+                        min_periods=min_periods,
+                    )
                     .mean()
                 )
 
@@ -428,13 +643,15 @@ def prepare_weather_series(building_df, variable):
 
     else:
 
-        source = df["target"]
+        source = result["feature_source"]
 
         for lag in FEATURE_LAGS:
 
             name = f"lag_{lag}"
 
-            df[name] = source.shift(lag)
+            result[name] = (
+                source.shift(lag)
+            )
 
             feature_columns.append(name)
 
@@ -442,19 +659,26 @@ def prepare_weather_series(building_df, variable):
 
             name = f"rolling_mean_{window}"
 
-            df[name] = (
+            min_periods = get_rolling_min_periods(
+                window
+            )
+
+            result[name] = (
                 source
-                .rolling(window)
+                .rolling(
+                    window,
+                    min_periods=min_periods,
+                )
                 .mean()
             )
 
             feature_columns.append(name)
 
-    return df, feature_columns
+    return result, feature_columns
 
 
 # ==================================================
-# 6. MODEL AND METRIC HELPERS
+# 7. MODEL AND METRIC HELPERS
 # ==================================================
 
 def create_model():
@@ -491,7 +715,10 @@ def circular_difference(actual, predicted):
     ) - 180.0
 
 
-def angle_from_components(sin_values, cos_values):
+def angle_from_components(
+    sin_values,
+    cos_values,
+):
 
     return (
         np.rad2deg(
@@ -503,7 +730,10 @@ def angle_from_components(sin_values, cos_values):
     ) % 360.0
 
 
-def calculate_angle_metrics(actual, predicted):
+def calculate_angle_metrics(
+    actual,
+    predicted,
+):
 
     differences = circular_difference(
         np.asarray(actual),
@@ -522,7 +752,7 @@ def calculate_angle_metrics(actual, predicted):
 
 
 # ==================================================
-# 7. HORIZON-SPECIFIC TRAINING AND FORECASTING
+# 8. HORIZON-SPECIFIC TRAINING AND FORECASTING
 # ==================================================
 
 def train_horizon(
@@ -540,6 +770,10 @@ def train_horizon(
         variable == "wind_direction"
     )
 
+    # --------------------------------------------------
+    # A. TARGET VALIDATION
+    # --------------------------------------------------
+
     if is_direction:
 
         y_sin = df["target_sin"].shift(-steps)
@@ -550,13 +784,29 @@ def train_horizon(
             & y_cos.notna()
         )
 
+        current_target_valid = (
+            df["target_sin"].notna()
+            & df["target_cos"].notna()
+        )
+
     else:
 
         y = df["target"].shift(-steps)
+
         target_valid = y.notna()
+
+        current_target_valid = (
+            df["target"].notna()
+        )
+
+    # A row is valid only if:
+    # 1. All features are available.
+    # 2. The current observation is genuine.
+    # 3. The future training target is genuine.
 
     valid = (
         X.notna().all(axis=1)
+        & current_target_valid
         & target_valid
     )
 
@@ -573,16 +823,35 @@ def train_horizon(
 
     n = len(X_valid)
 
+    print(
+        f"Valid training samples: {n}"
+    )
+
     if n < MINIMUM_SAMPLES:
-        print(f"Insufficient samples: {n}")
+
+        print(
+            f"Insufficient samples: {n} "
+            f"(minimum: {MINIMUM_SAMPLES})"
+        )
+
         return None, None
+
+    # --------------------------------------------------
+    # B. CHRONOLOGICAL SPLIT
+    # --------------------------------------------------
 
     train_end = int(n * 0.70)
     validation_end = int(n * 0.85)
 
     X_train = X_valid.iloc[:train_end]
-    X_val = X_valid.iloc[train_end:validation_end]
-    X_test = X_valid.iloc[validation_end:]
+
+    X_val = X_valid.iloc[
+        train_end:validation_end
+    ]
+
+    X_test = X_valid.iloc[
+        validation_end:
+    ]
 
     if is_direction:
 
@@ -601,20 +870,30 @@ def train_horizon(
         y_test = y_valid.iloc[validation_end:]
 
     if len(X_val) == 0 or len(X_test) == 0:
+
+        print("Validation or test set is empty.")
+
         return None, None
 
     # --------------------------------------------------
-    # A. TRAIN RANDOM FOREST
+    # C. TRAIN RANDOM FOREST
     # --------------------------------------------------
 
     model = create_model()
 
     if is_direction:
 
-        model.fit(X_train, sin_train)
+        model.fit(
+            X_train,
+            sin_train,
+        )
 
         cos_model = create_model()
-        cos_model.fit(X_train, cos_train)
+
+        cos_model.fit(
+            X_train,
+            cos_train,
+        )
 
         val_prediction = angle_from_components(
             model.predict(X_val),
@@ -643,7 +922,10 @@ def train_horizon(
 
     else:
 
-        model.fit(X_train, y_train)
+        model.fit(
+            X_train,
+            y_train,
+        )
 
         val_prediction = model.predict(X_val)
 
@@ -672,7 +954,7 @@ def train_horizon(
     )
 
     # --------------------------------------------------
-    # B. TEST EVALUATION
+    # D. TEST EVALUATION
     # --------------------------------------------------
 
     if is_direction:
@@ -692,14 +974,18 @@ def train_horizon(
             df.loc[X_test.index, "target_cos"],
         )
 
-        rf_test_mae, rf_test_rmse = calculate_angle_metrics(
-            test_actual,
-            test_prediction,
+        rf_test_mae, rf_test_rmse = (
+            calculate_angle_metrics(
+                test_actual,
+                test_prediction,
+            )
         )
 
-        baseline_mae, baseline_rmse = calculate_angle_metrics(
-            test_actual,
-            test_baseline,
+        baseline_mae, baseline_rmse = (
+            calculate_angle_metrics(
+                test_actual,
+                test_baseline,
+            )
         )
 
     else:
@@ -713,14 +999,18 @@ def train_horizon(
             "target",
         ].to_numpy()
 
-        rf_test_mae, rf_test_rmse = calculate_metrics(
-            test_actual,
-            test_prediction,
+        rf_test_mae, rf_test_rmse = (
+            calculate_metrics(
+                test_actual,
+                test_prediction,
+            )
         )
 
-        baseline_mae, baseline_rmse = calculate_metrics(
-            test_actual,
-            test_baseline,
+        baseline_mae, baseline_rmse = (
+            calculate_metrics(
+                test_actual,
+                test_baseline,
+            )
         )
 
     if selected_model == "random_forest":
@@ -734,14 +1024,63 @@ def train_horizon(
         selected_rmse = baseline_rmse
 
     # --------------------------------------------------
-    # C. LATEST AVAILABLE FORECAST ORIGIN
+    # E. LATEST AVAILABLE FORECAST ORIGIN
     # --------------------------------------------------
 
-    latest_features = X.dropna().tail(1)
+    # Only genuine current measurements may define
+    # the forecast origin.
 
-    if latest_features.empty:
-        print("No valid latest features.")
+    # First inspect the latest genuine observation,
+    # even if some features are still missing.
+
+    available_rows = X.loc[
+        current_target_valid
+    ]
+
+    if not available_rows.empty:
+
+        latest_observation = available_rows.index[-1]
+
+        missing_features = (
+            available_rows.loc[latest_observation]
+            .index[
+                available_rows.loc[latest_observation].isna()
+            ]
+            .tolist()
+        )
+
+        print(
+            f"Latest genuine observation: "
+            f"{latest_observation}"
+        )
+
+        print(
+            f"Missing features at latest observation: "
+            f"{missing_features}"
+        )
+
+    else:
+
+        print(
+            "No genuine current observations available."
+        )
+
         return None, None
+
+    # Only use a timestamp if every required feature
+    # is available and the current target is genuine.
+
+    latest_candidates = X.loc[
+        current_target_valid
+    ].dropna()
+
+    if latest_candidates.empty:
+
+        print("No valid latest forecast features.")
+
+        return None, None
+
+    latest_features = latest_candidates.tail(1)
 
     latest_timestamp = latest_features.index[-1]
 
@@ -749,24 +1088,33 @@ def train_horizon(
 
         observed = float(
             angle_from_components(
-                [df.loc[latest_timestamp, "target_sin"]],
-                [df.loc[latest_timestamp, "target_cos"]],
+                [
+                    df.loc[
+                        latest_timestamp,
+                        "target_sin",
+                    ]
+                ],
+                [
+                    df.loc[
+                        latest_timestamp,
+                        "target_cos",
+                    ]
+                ],
             )[0]
         )
 
     else:
 
         observed = float(
-            df.loc[latest_timestamp, "target"]
+            df.loc[
+                latest_timestamp,
+                "target",
+            ]
         )
 
     # --------------------------------------------------
-    # D. FINAL MODEL TRAINING IN MEMORY
+    # F. FINAL MODEL TRAINING
     # --------------------------------------------------
-
-    # A final model is only required when Random Forest
-    # performed better than the persistence baseline.
-    # No model artifact is written to disk.
 
     if selected_model == "random_forest":
 
@@ -794,7 +1142,7 @@ def train_horizon(
             )
 
     # --------------------------------------------------
-    # E. CREATE FORECAST
+    # G. CREATE FORECAST
     # --------------------------------------------------
 
     if is_direction:
@@ -836,13 +1184,36 @@ def train_horizon(
 
         # Physical output bounds.
         if variable == "humidity":
-            prediction = float(np.clip(prediction, 0, 100))
 
-        elif variable == "wind_speed":
-            prediction = max(0.0, prediction)
+            prediction = float(
+                np.clip(prediction, 0, 100)
+            )
 
-        elif variable == "rainfall":
-            prediction = max(0.0, prediction)
+        elif variable in [
+            "wind_speed",
+            "rainfall",
+        ]:
+
+            prediction = max(
+                0.0,
+                prediction,
+            )
+
+        elif variable == "barometric_pressure":
+
+            prediction = float(
+                np.clip(prediction, 850, 1100)
+            )
+
+        elif variable == "temperature":
+
+            prediction = float(
+                np.clip(prediction, -40, 60)
+            )
+
+    # --------------------------------------------------
+    # H. EVALUATION RESULT
+    # --------------------------------------------------
 
     evaluation = {
         "building": building,
@@ -861,13 +1232,19 @@ def train_horizon(
         "baseline_mae": baseline_mae,
     }
 
+    # --------------------------------------------------
+    # I. FORECAST RESULT
+    # --------------------------------------------------
+
     forecast = {
         "building": building,
         "sensor_type": variable,
         "forecast_origin": latest_timestamp,
         "forecast_timestamp": (
             latest_timestamp
-            + pd.Timedelta(minutes=horizon_minutes)
+            + pd.Timedelta(
+                minutes=horizon_minutes
+            )
         ),
         "horizon_minutes": horizon_minutes,
         "predicted_value": prediction,
@@ -875,21 +1252,66 @@ def train_horizon(
         "model_type": selected_model,
     }
 
-    print(f"Validation RF MAE: {val_rf_mae:.5f}")
-    print(f"Validation baseline MAE: {val_baseline_mae:.5f}")
-    print(f"Selected model: {selected_model}")
-    print(f"Test MAE: {selected_mae:.5f}")
-    print(f"Test RMSE: {selected_rmse:.5f}")
+    print(
+        f"Validation RF MAE: {val_rf_mae:.5f}"
+    )
+
+    print(
+        f"Validation baseline MAE: "
+        f"{val_baseline_mae:.5f}"
+    )
+
+    print(
+        f"Selected model: {selected_model}"
+    )
+
+    print(
+        f"Test MAE: {selected_mae:.5f}"
+    )
+
+    print(
+        f"Test RMSE: {selected_rmse:.5f}"
+    )
+
     print(
         f"Forecast: {prediction:.5f} "
         f"{WEATHER_VARIABLES[variable]['unit']}"
+    )
+
+    print(
+        f"Forecast origin: {latest_timestamp}"
     )
 
     return evaluation, forecast
 
 
 # ==================================================
-# 8. MAIN
+# 9. SAFE CSV WRITING
+# ==================================================
+
+def atomic_to_csv(df, path):
+    """
+    Write to a temporary file first.
+    Replace the destination only after a successful write.
+    """
+
+    temporary_path = path.with_suffix(
+        path.suffix + ".tmp"
+    )
+
+    df.to_csv(
+        temporary_path,
+        index=False,
+    )
+
+    os.replace(
+        temporary_path,
+        path,
+    )
+
+
+# ==================================================
+# 10. MAIN
 # ==================================================
 
 def main():
@@ -900,7 +1322,9 @@ def main():
     data = load_weather_data()
 
     if data.empty:
+
         print("No weather data found.")
+
         return
 
     data = clean_weather_data(data)
@@ -910,9 +1334,17 @@ def main():
 
     buildings = data.groupby("building")
 
-    print(
-        f"\nWeather stations found: {len(buildings)}"
+    building_ids = list(
+        buildings.groups.keys()
     )
+
+    print(
+        f"\nWeather stations found: {len(building_ids)}"
+    )
+
+    # --------------------------------------------------
+    # A. TRAIN ALL BUILDINGS AND SENSORS
+    # --------------------------------------------------
 
     for building, building_df in buildings:
 
@@ -924,9 +1356,11 @@ def main():
 
             print(f"\nVariable: {variable}")
 
-            df, feature_columns = prepare_weather_series(
-                building_df,
-                variable,
+            df, feature_columns = (
+                prepare_weather_series(
+                    building_df,
+                    variable,
+                )
             )
 
             for steps, horizon_minutes in HORIZONS.items():
@@ -945,10 +1379,20 @@ def main():
                 )
 
                 if evaluation is not None:
-                    all_evaluations.append(evaluation)
+
+                    all_evaluations.append(
+                        evaluation
+                    )
 
                 if forecast is not None:
-                    all_forecasts.append(forecast)
+
+                    all_forecasts.append(
+                        forecast
+                    )
+
+    # --------------------------------------------------
+    # B. CREATE RESULT DATAFRAMES
+    # --------------------------------------------------
 
     evaluation_df = pd.DataFrame(
         all_evaluations
@@ -966,15 +1410,140 @@ def main():
         RESULT_DIR / "forecasts.csv"
     )
 
-    evaluation_df.to_csv(
-        evaluation_path,
-        index=False,
+    diagnostics_path = (
+        RESULT_DIR / "forecast_generation_diagnostics.csv"
     )
 
-    forecast_df.to_csv(
-        forecast_path,
-        index=False,
+    # Evaluation results are saved independently.
+    if not evaluation_df.empty:
+
+        atomic_to_csv(
+            evaluation_df,
+            evaluation_path,
+        )
+
+    # --------------------------------------------------
+    # C. CHECK FORECAST COMPLETENESS
+    # --------------------------------------------------
+
+    expected_forecasts = {
+        (building, variable, horizon)
+        for building in building_ids
+        for variable in WEATHER_VARIABLES
+        for horizon in HORIZONS.values()
+    }
+
+    generated_forecasts = {
+        (
+            row["building"],
+            row["sensor_type"],
+            row["horizon_minutes"],
+        )
+        for row in all_forecasts
+    }
+
+    missing_forecasts = (
+        expected_forecasts - generated_forecasts
     )
+
+    extra_forecasts = (
+        generated_forecasts - expected_forecasts
+    )
+
+    print("\n" + "=" * 70)
+    print("FORECAST COMPLETENESS CHECK")
+    print("=" * 70)
+
+    print(
+        f"Expected forecasts: {len(expected_forecasts)}"
+    )
+
+    print(
+        f"Generated forecasts: {len(generated_forecasts)}"
+    )
+
+    print(
+        f"Missing forecasts: {len(missing_forecasts)}"
+    )
+
+    # --------------------------------------------------
+    # D. PUBLISH ONLY COMPLETE FORECAST RESULTS
+    # --------------------------------------------------
+
+    if (
+        not missing_forecasts
+        and not extra_forecasts
+        and not forecast_df.empty
+    ):
+
+        atomic_to_csv(
+            forecast_df,
+            forecast_path,
+        )
+
+        print(
+            "\nAll expected forecasts generated successfully."
+        )
+
+        print(
+            f"Forecast file updated: {forecast_path}"
+        )
+
+        if diagnostics_path.exists():
+
+            diagnostics_path.unlink()
+
+    else:
+
+        diagnostic_rows = [
+            {
+                "building": building,
+                "sensor_type": variable,
+                "horizon_minutes": horizon,
+                "status": "missing",
+            }
+            for building, variable, horizon
+            in sorted(missing_forecasts)
+        ]
+
+        diagnostics_df = pd.DataFrame(
+            diagnostic_rows,
+            columns=[
+                "building",
+                "sensor_type",
+                "horizon_minutes",
+                "status",
+            ],
+        )
+
+        atomic_to_csv(
+            diagnostics_df,
+            diagnostics_path,
+        )
+
+        print(
+            "\nWARNING: Forecast generation incomplete."
+        )
+
+        print(
+            "The existing forecasts.csv was NOT overwritten."
+        )
+
+        print(
+            f"Diagnostics: {diagnostics_path}"
+        )
+
+        for row in diagnostic_rows:
+
+            print(
+                f"Missing: {row['building']} / "
+                f"{row['sensor_type']} / "
+                f"{row['horizon_minutes']} min"
+            )
+
+    # --------------------------------------------------
+    # E. FINAL SUMMARY
+    # --------------------------------------------------
 
     print("\n" + "=" * 70)
     print("WEATHER TRAINING COMPLETED")
@@ -989,7 +1558,7 @@ def main():
     )
 
     print(
-        f"\nEvaluation file: {evaluation_path}"
+        f"Evaluation file: {evaluation_path}"
     )
 
     print(
@@ -998,4 +1567,5 @@ def main():
 
 
 if __name__ == "__main__":
+
     main()

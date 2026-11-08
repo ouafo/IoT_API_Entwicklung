@@ -21,6 +21,14 @@ class ForecastRoomItem(BaseModel):
         description="Available forecast horizons in minutes."
     )
 
+    available_sensors: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Available forecast sensor types, e.g. temperature, "
+            "humidity, co2 and light."
+        )
+    )
+
     latest_forecast: Optional[datetime] = Field(
         default=None,
         description="Latest target timestamp of the forecast."
@@ -66,20 +74,35 @@ class ForecastItem(BaseModel):
         description="Unique room identifier."
     )
 
+    sensor_type: str = Field(
+        description=(
+            "Sensor type: temperature, humidity, co2 or light."
+        )
+    )
+
+    sensor_label: Optional[str] = Field(
+        default=None,
+        description="Human-readable sensor name."
+    )
+
     forecast_origin: datetime = Field(
         description="Latest input timestamp used to generate the forecast."
     )
 
     forecast_timestamp: datetime = Field(
-        description="Target timestamp of the predicted room temperature."
+        description="Target timestamp of the predicted sensor value."
     )
 
     horizon_minutes: int = Field(
         description="Forecast horizon in minutes."
     )
 
-    predicted_temperature_c: float = Field(
-        description="Predicted room temperature in degrees Celsius."
+    predicted_value: float = Field(
+        description="Predicted value of the selected sensor."
+    )
+
+    unit: str = Field(
+        description="Unit of the predicted sensor value."
     )
 
     model_type: str = Field(
@@ -107,6 +130,18 @@ class ForecastItem(BaseModel):
     )
 
 
+class TemperatureForecastItem(ForecastItem):
+    """Forecast response model for temperature predictions."""
+
+    predicted_temperature_c: Optional[float] = Field(
+        default=None,
+        description=(
+            "Legacy temperature prediction field. "
+            "Only available for temperature forecasts."
+        )
+    )
+
+
 class RoomForecastsResponse(BaseModel):
     count: int = Field(
         description="Number of forecast records returned."
@@ -126,23 +161,36 @@ class RoomForecastSummary(BaseModel):
         description="Unique room identifier."
     )
 
+    sensor_type: str = Field(
+        description="Selected sensor type."
+    )
+
+    sensor_label: Optional[str] = Field(
+        default=None,
+        description="Human-readable sensor name."
+    )
+
+    unit: str = Field(
+        description="Unit of the selected sensor."
+    )
+
     forecast_count: int = Field(
         description="Number of forecast records in the latest generation."
     )
 
-    average_temperature_c: Optional[float] = Field(
+    average_value: Optional[float] = Field(
         default=None,
-        description="Average predicted temperature in degrees Celsius."
+        description="Average predicted sensor value."
     )
 
-    minimum_temperature_c: Optional[float] = Field(
+    minimum_value: Optional[float] = Field(
         default=None,
-        description="Minimum predicted temperature in degrees Celsius."
+        description="Minimum predicted sensor value."
     )
 
-    maximum_temperature_c: Optional[float] = Field(
+    maximum_value: Optional[float] = Field(
         default=None,
-        description="Maximum predicted temperature in degrees Celsius."
+        description="Maximum predicted sensor value."
     )
 
     first_forecast: Optional[datetime] = Field(

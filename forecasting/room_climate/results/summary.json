@@ -1,7 +1,20 @@
 {
-    "total_rooms": 14,
-    "eligible_rooms": 9,
-    "insufficient_data_rooms": 5,
-    "trained_room_horizon_pairs": 36,
-    "generated_forecasts": 36
+    "database_table": "public.room_climate",
+    "input_csv_used": false,
+    "training_timestamp": "2026-11-08T12:25:38.360343+00:00",
+    "rooms_processed": 9,
+    "sensors_processed": [
+        "co2",
+        "humidity",
+        "light",
+        "temperature"
+    ],
+    "forecast_count": 144,
+    "evaluation_count": 144,
+    "horizons_minutes": [
+        15,
+        30,
+        45,
+        60
+    ]
 }

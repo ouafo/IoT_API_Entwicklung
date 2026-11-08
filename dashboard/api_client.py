@@ -157,6 +157,7 @@ class APIClient:
             params=params
         )
 
+    
     # ---------------------------------------------------------
     # ROOM CLIMATE FORECASTS
     # ---------------------------------------------------------
@@ -167,22 +168,59 @@ class APIClient:
     def get_room_forecasts(
         self,
         room_id: str,
-        limit: int = 1000
+        limit: int = 1000,
+        sensor_type: Optional[str] = "temperature",
+        horizon_minutes: Optional[int] = None
     ):
+        params = {
+            "limit": limit
+        }
+
+        if sensor_type:
+            params["sensor_type"] = sensor_type
+
+        if horizon_minutes is not None:
+            params["horizon_minutes"] = horizon_minutes
+
         return self.get(
             f"/api/Forecasts/Rooms/{room_id}",
-            params={"limit": limit}
+            params=params
         )
 
-    def get_latest_room_forecast(self, room_id: str):
+    def get_latest_room_forecast(
+        self,
+        room_id: str,
+        sensor_type: Optional[str] = "temperature",
+        horizon_minutes: Optional[int] = None
+    ):
+        params = {}
+
+        if sensor_type:
+            params["sensor_type"] = sensor_type
+
+        if horizon_minutes is not None:
+            params["horizon_minutes"] = horizon_minutes
+
         return self.get(
-            f"/api/Forecasts/Rooms/{room_id}/Latest"
+            f"/api/Forecasts/Rooms/{room_id}/Latest",
+            params=params or None
         )
 
-    def get_room_forecast_summary(self, room_id: str):
+    def get_room_forecast_summary(
+        self,
+        room_id: str,
+        sensor_type: Optional[str] = "temperature"
+    ):
+        params = {}
+
+        if sensor_type:
+            params["sensor_type"] = sensor_type
+
         return self.get(
-            f"/api/Forecasts/Rooms/{room_id}/Summary"
+            f"/api/Forecasts/Rooms/{room_id}/Summary",
+            params=params or None
         )
+
 
     # ---------------------------------------------------------
     # ENERGY FORECASTS

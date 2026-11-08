@@ -1,7 +1,26 @@
 
-from pathlib import Path
+"""
+Room climate forecasting.
+
+Training data is loaded directly from PostgreSQL.
+Forecast results are written to CSV for compatibility with the existing API.
+
+Forecast targets:
+- temperature
+- humidity
+- co2
+- light_mean
+
+Motion is intentionally excluded from regression.
+"""
+
+from __future__ import annotations
+
 import json
+import logging
 import warnings
+from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -9,378 +28,723 @@ import pandas as pd
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
-warnings.filterwarnings("ignore")
+from psycopg.rows import dict_row
+
+from app.database.connection import get_conn, put_conn
 
 
-# ============================================================
-# CONFIGURATION
-# ============================================================
+# ---------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------
 
-BASE_DIR = Path(__file__).resolve().parent
-DATA_FILE = BASE_DIR / "data" / "room_climate_all_rooms.csv"
-RESULT_DIR = BASE_DIR / "results"
+BASE_DIR = Path(__file__).resolve().parents[2]
+RESULT_DIR = BASE_DIR / "forecasting" / "room_climate" / "results"
 
-RESULT_DIR.mkdir(parents=True, exist_ok=True)
+FORECAST_FILE = RESULT_DIR / "forecasts.csv"
+EVALUATION_FILE = RESULT_DIR / "evaluation_results.csv"
+QUALITY_FILE = RESULT_DIR / "data_quality.csv"
+SUMMARY_FILE = RESULT_DIR / "summary.json"
 
 FREQUENCY = "15min"
 HORIZONS = [1, 2, 3, 4]
 
+# Minimum number of usable training observations per room and sensor.
+MIN_SAMPLES = 500
+
+# Data quality thresholds.
 MIN_COMPLETENESS = 70.0
 MAX_DATA_AGE_MINUTES = 60
 
+# Historical features.
 LAGS = [0, 1, 2, 4, 8, 96, 672]
+ROLLING_WINDOWS = [4, 96]
+
+MODEL_PARAMETERS = {
+    "n_estimators": 200,
+    "max_depth": 15,
+    "min_samples_leaf": 2,
+    "random_state": 42,
+    "n_jobs": -1,
+}
+
+SENSORS = {
+    "temperature": {
+        "column": "temperature",
+        "unit_column": "temperature_unit",
+        "unit_default": "°C",
+        "minimum": -10,
+        "maximum": 50,
+    },
+    "humidity": {
+        "column": "humidity",
+        "unit_column": "humidity_unit",
+        "unit_default": "%",
+        "minimum": 0,
+        "maximum": 100,
+    },
+    "co2": {
+        "column": "co2",
+        "unit_column": "co2_unit",
+        "unit_default": "ppm",
+        "minimum": 250,
+        "maximum": 5000,
+    },
+    "light": {
+        "column": "light_mean",
+        "unit_column": "light_unit",
+        "unit_default": "Lux",
+        "minimum": 0,
+        "maximum": 100000,
+    },
+}
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+)
+
+logger = logging.getLogger(__name__)
+
+warnings.filterwarnings("ignore", category=FutureWarning)
 
 
-# ============================================================
-# 1. LOAD DATA
-# ============================================================
+# ---------------------------------------------------------------------
+# Database
+# ---------------------------------------------------------------------
 
-def load_data():
+def load_data_from_database() -> pd.DataFrame:
+    """
+    Load room climate measurements directly from PostgreSQL.
+    No input CSV is required.
+    """
 
-    if not DATA_FILE.exists():
-        raise FileNotFoundError(f"CSV nicht gefunden: {DATA_FILE}")
+    query = """
+        SELECT
+            building,
+            room_location,
+            start,
+            temperature,
+            humidity,
+            co2,
+            light_mean,
+            temperature_unit,
+            humidity_unit,
+            co2_unit,
+            light_unit
+        FROM public.room_climate
+        WHERE start IS NOT NULL
+        ORDER BY building, room_location, start;
+    """
 
-    print("Lade Raumklimadaten ...")
+    conn = get_conn()
 
-    df = pd.read_csv(DATA_FILE)
+    try:
+        with conn.cursor(row_factory=dict_row) as cursor:
+            cursor.execute(query)
+            rows = cursor.fetchall()
 
-    required = {"timestamp", "room_id", "temperature_c"}
-    missing = required - set(df.columns)
+        df = pd.DataFrame(rows)
 
-    if missing:
-        raise ValueError(f"Fehlende CSV-Spalten: {missing}")
+    finally:
+        put_conn(conn)
 
-    df["timestamp"] = pd.to_datetime(
-        df["timestamp"], utc=True, errors="coerce"
-    )
-
-    df["temperature_c"] = pd.to_numeric(
-        df["temperature_c"], errors="coerce"
-    )
-
-    df = df.dropna(subset=["timestamp", "room_id"])
-
-    df["room_id"] = df["room_id"].astype(str)
-
-    if "temperature_conflict" in df.columns:
-        conflicts = df["temperature_conflict"].astype(str).str.lower().isin(
-            ["true", "1", "yes"]
+    if df.empty:
+        raise RuntimeError(
+            "Die Datenbanktabelle public.room_climate enthält keine Messwerte."
         )
-        df.loc[conflicts, "temperature_c"] = np.nan
 
-    df = df.sort_values(["room_id", "timestamp"])
+    df["start"] = pd.to_datetime(df["start"], utc=True, errors="coerce")
 
-    print(f"Datensätze geladen: {len(df):,}")
-    print(f"Räume gefunden: {df['room_id'].nunique()}")
+    df = df.dropna(
+        subset=["start", "building", "room_location"]
+    )
+
+    df["building"] = df["building"].astype(str)
+    df["room_location"] = df["room_location"].astype(str)
+
+    for sensor in SENSORS:
+        column = SENSORS[sensor]["column"]
+        df[column] = pd.to_numeric(df[column], errors="coerce")
+
+    df["room_id"] = (
+        df["building"] + "-" + df["room_location"]
+    )
+
+    df = df.sort_values(
+        ["room_id", "start"]
+    ).reset_index(drop=True)
+
+    logger.info(
+        "Datenbank erfolgreich geladen: %s Messdatensätze, %s Räume",
+        len(df),
+        df["room_id"].nunique(),
+    )
 
     return df
 
 
-# ============================================================
-# 2. DATA QUALITY
-# ============================================================
+# ---------------------------------------------------------------------
+# Data preparation
+# ---------------------------------------------------------------------
 
-def evaluate_data_quality(df):
+def clean_sensor_values(
+    series: pd.Series,
+    sensor_type: str,
+) -> pd.Series:
+    """
+    Remove physically implausible values and sensor error values.
 
-    global_latest = df["timestamp"].max()
-    quality = []
+    Missing values remain missing. Targets are never artificially
+    interpolated.
+    """
 
-    for room_id, group in df.groupby("room_id"):
+    config = SENSORS[sensor_type]
 
-        group = group.sort_values("timestamp")
+    cleaned = pd.to_numeric(
+        series,
+        errors="coerce",
+    ).astype(float)
 
-        series = (
-            group.drop_duplicates("timestamp")
-            .set_index("timestamp")["temperature_c"]
-            .sort_index()
-        )
+    cleaned = cleaned.replace(
+        [np.inf, -np.inf],
+        np.nan,
+    )
 
-        full_index = pd.date_range(
-            start=series.index.min(),
-            end=series.index.max(),
-            freq=FREQUENCY,
-            tz="UTC"
-        )
+    cleaned = cleaned.where(
+        (cleaned >= config["minimum"])
+        & (cleaned <= config["maximum"])
+    )
 
-        aligned = series.reindex(full_index)
+    return cleaned
 
-        completeness = aligned.notna().mean() * 100
-        last_valid = aligned.last_valid_index()
 
-        age_minutes = (
-            (global_latest - last_valid).total_seconds() / 60
-            if last_valid is not None else np.inf
-        )
+def get_sensor_unit(
+    room_df: pd.DataFrame,
+    sensor_type: str,
+) -> str:
+    """Determine the unit from the database."""
+
+    unit_column = SENSORS[sensor_type]["unit_column"]
+
+    if unit_column in room_df.columns:
+        values = room_df[unit_column].dropna()
+
+        if not values.empty:
+            unit = str(values.iloc[0]).strip()
+
+            normalized = {
+                "celsius": "°C",
+                "percent": "%",
+                "ppm": "ppm",
+                "Lux": "Lux",
+            }
+
+            return normalized.get(unit, unit)
+
+    return SENSORS[sensor_type]["unit_default"]
+
+
+def prepare_room_series(
+    room_df: pd.DataFrame,
+    sensor_type: str,
+) -> pd.Series:
+    """
+    Create a regular 15-minute time series for one room and sensor.
+
+    Duplicate timestamps are aggregated using the median.
+    Missing intervals remain NaN.
+    """
+
+    column = SENSORS[sensor_type]["column"]
+
+    data = room_df[["start", column]].copy()
+
+    data[column] = clean_sensor_values(
+        data[column],
+        sensor_type,
+    )
+
+    data = data.dropna(subset=["start"])
+
+    # Multiple measurements for the same timestamp:
+    # use the median instead of arbitrarily selecting one.
+    series = (
+        data.groupby("start")[column]
+        .median()
+        .sort_index()
+    )
+
+    if series.empty:
+        return series
+
+    # Regular 15-minute time grid.
+    series = series.resample(FREQUENCY).median()
+
+    return series.astype(float)
+
+
+# ---------------------------------------------------------------------
+# Data quality
+# ---------------------------------------------------------------------
+
+def evaluate_data_quality(
+    room_series: dict[tuple[str, str], pd.Series],
+    latest_database_timestamp: pd.Timestamp,
+) -> tuple[dict[tuple[str, str], bool], list[dict[str, Any]]]:
+
+    eligibility = {}
+    quality_results = []
+
+    for (room_id, sensor_type), series in room_series.items():
+
+        if series.empty:
+            continue
+
+        valid = series.dropna()
+
+        if valid.empty:
+            completeness = 0.0
+            latest_age_minutes = float("inf")
+        else:
+            completeness = (
+                valid.notna().sum() / len(series) * 100
+            )
+
+            latest_age_minutes = (
+                latest_database_timestamp - valid.index.max()
+            ).total_seconds() / 60
 
         eligible = (
-            completeness >= MIN_COMPLETENESS
-            and age_minutes <= MAX_DATA_AGE_MINUTES
+            len(valid) >= MIN_SAMPLES
+            and completeness >= MIN_COMPLETENESS
+            and latest_age_minutes <= MAX_DATA_AGE_MINUTES
         )
 
-        quality.append({
+        eligibility[(room_id, sensor_type)] = eligible
+
+        quality_results.append({
             "room_id": room_id,
-            "total_intervals": len(aligned),
-            "valid_intervals": int(aligned.notna().sum()),
+            "sensor_type": sensor_type,
+            "valid_samples": len(valid),
+            "total_intervals": len(series),
             "completeness_percent": round(completeness, 2),
-            "last_measurement": last_valid,
-            "data_age_minutes": round(age_minutes, 2),
-            "status": "eligible" if eligible else "insufficient_data"
+            "latest_data_age_minutes": round(
+                latest_age_minutes, 2
+            ),
+            "eligible": eligible,
         })
 
-    result = pd.DataFrame(quality)
-    result.to_csv(RESULT_DIR / "data_quality.csv", index=False)
-
-    return result
+    return eligibility, quality_results
 
 
-# ============================================================
-# 3. FEATURES
-# ============================================================
+# ---------------------------------------------------------------------
+# Feature engineering
+# ---------------------------------------------------------------------
 
-def create_features(series):
+def create_features(series: pd.Series) -> pd.DataFrame:
+    """
+    Create lag, rolling and calendar features.
 
-    frame = pd.DataFrame(index=series.index)
+    Only historical/current measurements are used.
+    """
 
-    frame["temperature_current"] = series
+    features = pd.DataFrame(index=series.index)
 
-    for lag in LAGS[1:]:
-        frame[f"temperature_lag_{lag}"] = series.shift(lag)
+    for lag in LAGS:
+        features[f"lag_{lag}"] = series.shift(lag)
 
-    frame["hour_sin"] = np.sin(
-        2 * np.pi * frame.index.hour / 24
+    for window in ROLLING_WINDOWS:
+        features[f"rolling_mean_{window}"] = (
+            series.rolling(
+                window=window,
+                min_periods=window,
+            ).mean()
+        )
+
+    hour = series.index.hour
+    weekday = series.index.dayofweek
+
+    features["hour_sin"] = np.sin(
+        2 * np.pi * hour / 24
     )
 
-    frame["hour_cos"] = np.cos(
-        2 * np.pi * frame.index.hour / 24
+    features["hour_cos"] = np.cos(
+        2 * np.pi * hour / 24
     )
 
-    frame["weekday_sin"] = np.sin(
-        2 * np.pi * frame.index.dayofweek / 7
+    features["weekday_sin"] = np.sin(
+        2 * np.pi * weekday / 7
     )
 
-    frame["weekday_cos"] = np.cos(
-        2 * np.pi * frame.index.dayofweek / 7
+    features["weekday_cos"] = np.cos(
+        2 * np.pi * weekday / 7
     )
 
-    return frame
+    return features
 
 
-# ============================================================
-# 4. MODEL EVALUATION AND FORECASTING
-# ============================================================
+# ---------------------------------------------------------------------
+# Model training
+# ---------------------------------------------------------------------
 
-def calculate_metrics(actual, predicted):
+def calculate_metrics(
+    actual: pd.Series,
+    predicted: np.ndarray,
+) -> dict[str, float]:
 
     return {
-        "MAE": mean_absolute_error(actual, predicted),
-        "RMSE": np.sqrt(mean_squared_error(actual, predicted))
+        "mae": float(
+            mean_absolute_error(actual, predicted)
+        ),
+        "rmse": float(
+            np.sqrt(mean_squared_error(actual, predicted))
+        ),
     }
 
 
-def train_room_model(room_id, series):
+def train_sensor_model(
+    room_id: str,
+    sensor_type: str,
+    series: pd.Series,
+    unit: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
 
-    features = create_features(series)
-
-    room_results = []
     forecasts = []
+    evaluations = []
+
+    # Fill only short gaps in historical feature values.
+    # Original target values remain unchanged.
+    feature_series = series.ffill(limit=2)
+
+    features = create_features(feature_series)
 
     for horizon in HORIZONS:
 
         target = series.shift(-horizon)
+
         dataset = features.copy()
         dataset["target"] = target
 
-        # No imputation of target values.
-        dataset = dataset.dropna()
+        dataset = dataset.replace(
+            [np.inf, -np.inf],
+            np.nan,
+        ).dropna()
 
-        if len(dataset) < 500:
+        if len(dataset) < MIN_SAMPLES:
+            logger.info(
+                "Zu wenige Trainingsdaten: Raum=%s Sensor=%s Horizont=%s",
+                room_id,
+                sensor_type,
+                horizon,
+            )
             continue
 
-        X = dataset.drop(columns="target")
+        X = dataset.drop(columns=["target"])
         y = dataset["target"]
 
-        # Chronological 70 / 15 / 15 split.
+        # Chronological split: 70% / 15% / 15%.
         n = len(dataset)
+
         train_end = int(n * 0.70)
-        val_end = int(n * 0.85)
+        validation_end = int(n * 0.85)
 
         X_train = X.iloc[:train_end]
         y_train = y.iloc[:train_end]
 
-        X_val = X.iloc[train_end:val_end]
-        y_val = y.iloc[train_end:val_end]
+        X_validation = X.iloc[train_end:validation_end]
+        y_validation = y.iloc[train_end:validation_end]
 
-        X_test = X.iloc[val_end:]
-        y_test = y.iloc[val_end:]
+        X_test = X.iloc[validation_end:]
+        y_test = y.iloc[validation_end:]
 
-        if len(X_val) == 0 or len(X_test) == 0:
+        if (
+            len(X_train) == 0
+            or len(X_validation) == 0
+            or len(X_test) == 0
+        ):
             continue
 
-        # Persistence baseline: latest known temperature.
-        persistence_val = X_val["temperature_current"].values
-
-        rf = RandomForestRegressor(
-            n_estimators=200,
-            max_depth=15,
-            min_samples_leaf=2,
-            random_state=42,
-            n_jobs=-1
+        # Random Forest.
+        model = RandomForestRegressor(
+            **MODEL_PARAMETERS
         )
 
-        rf.fit(X_train, y_train)
+        model.fit(X_train, y_train)
 
-        rf_val = rf.predict(X_val)
-
-        persistence_mae = mean_absolute_error(
-            y_val, persistence_val
+        validation_prediction = model.predict(
+            X_validation
         )
 
-        rf_mae = mean_absolute_error(y_val, rf_val)
-
-        selected = (
-            "random_forest"
-            if rf_mae < persistence_mae
-            else "persistence"
+        rf_validation_mae = mean_absolute_error(
+            y_validation,
+            validation_prediction,
         )
 
-        # Evaluate selected model on untouched test data.
-        if selected == "random_forest":
-            prediction_test = rf.predict(X_test)
+        # Persistence baseline:
+        # future value = latest observed value.
+        persistence_validation = X_validation["lag_0"].to_numpy()
+
+        persistence_validation_mae = mean_absolute_error(
+            y_validation,
+            persistence_validation,
+        )
+
+        # Select the better model using validation data only.
+        use_random_forest = (
+            rf_validation_mae < persistence_validation_mae
+        )
+
+        if use_random_forest:
+            test_prediction = model.predict(X_test)
+            model_type = "RandomForest"
         else:
-            prediction_test = X_test["temperature_current"].values
+            test_prediction = X_test["lag_0"].to_numpy()
+            model_type = "Persistence"
 
-        metrics = calculate_metrics(y_test, prediction_test)
+        metrics = calculate_metrics(
+            y_test,
+            test_prediction,
+        )
 
-        room_results.append({
+        evaluations.append({
             "room_id": room_id,
+            "sensor_type": sensor_type,
             "horizon_minutes": horizon * 15,
-            "selected_model": selected,
-            "validation_persistence_mae": persistence_mae,
-            "validation_rf_mae": rf_mae,
-            "test_mae": metrics["MAE"],
-            "test_rmse": metrics["RMSE"],
-            "test_samples": len(y_test)
+            "model_type": model_type,
+            "sample_count": len(dataset),
+            "validation_mae_random_forest": float(
+                rf_validation_mae
+            ),
+            "validation_mae_persistence": float(
+                persistence_validation_mae
+            ),
+            "test_mae": metrics["mae"],
+            "test_rmse": metrics["rmse"],
         })
 
-        # Refit the selected RF using all available historical data.
-        # The final model exists only in memory.
-        if selected == "random_forest":
+        # Find the latest usable feature row for forecasting.
+        latest_features = features.dropna()
 
+        if latest_features.empty:
+            continue
+
+        latest_row = latest_features.iloc[[-1]]
+        forecast_origin = latest_row.index[0]
+
+        # Fit the selected model using all available historical
+        # training examples.
+        if use_random_forest:
             final_model = RandomForestRegressor(
-                n_estimators=200,
-                max_depth=15,
-                min_samples_leaf=2,
-                random_state=42,
-                n_jobs=-1
+                **MODEL_PARAMETERS
             )
 
             final_model.fit(X, y)
 
-        # Forecast from the latest observation with complete features.
-        latest_features = features.dropna()
+            predicted_value = float(
+                final_model.predict(latest_row)[0]
+            )
+        else:
+            predicted_value = float(
+                latest_row["lag_0"].iloc[0]
+            )
 
-        if not latest_features.empty:
-
-            latest = latest_features.iloc[[-1]]
-            origin = latest.index[0]
-
-            if selected == "random_forest":
-                forecast_value = float(final_model.predict(latest)[0])
-            else:
-                forecast_value = float(
-                    latest["temperature_current"].iloc[0]
-                )
-
-            forecasts.append({
-                "room_id": room_id,
-                "forecast_origin": origin,
-                "forecast_timestamp": (
-                    origin + pd.Timedelta(minutes=horizon * 15)
-                ),
-                "horizon_minutes": horizon * 15,
-                "predicted_temperature_c": forecast_value,
-                "model_type": selected
-            })
-
-    return room_results, forecasts
-
-
-# ============================================================
-# 5. MULTI-ROOM PIPELINE
-# ============================================================
-
-def main():
-
-    df = load_data()
-
-    quality = evaluate_data_quality(df)
-
-    all_results = []
-    all_forecasts = []
-
-    eligible_rooms = quality.loc[
-        quality["status"] == "eligible", "room_id"
-    ].tolist()
-
-    print("\nDatenqualitätsübersicht:")
-    print(quality[["room_id", "completeness_percent", "status"]].to_string(
-        index=False
-    ))
-
-    print(f"\nForecast-fähige Räume: {len(eligible_rooms)}")
-    print(f"Nicht geeignete Räume: {len(quality) - len(eligible_rooms)}")
-
-    for room_id in eligible_rooms:
-
-        print(f"\nTrainiere Raum: {room_id}")
-
-        room_data = df[df["room_id"] == room_id]
-
-        series = (
-            room_data.drop_duplicates("timestamp")
-            .set_index("timestamp")["temperature_c"]
-            .sort_index()
+        # Forecast timestamp is based on the actual forecast origin.
+        forecast_timestamp = (
+            forecast_origin
+            + pd.Timedelta(minutes=horizon * 15)
         )
 
-        full_index = pd.date_range(
-            start=series.index.min(),
-            end=series.index.max(),
-            freq=FREQUENCY,
-            tz="UTC"
+        # Keep predicted_temperature_c for compatibility with
+        # the existing temperature API. Non-temperature records
+        # will be handled in the upcoming service update.
+        predicted_temperature = (
+            predicted_value
+            if sensor_type == "temperature"
+            else np.nan
         )
 
-        series = series.reindex(full_index)
+        forecasts.append({
+            "room_id": room_id,
+            "sensor_type": sensor_type,
+            "forecast_origin": forecast_origin,
+            "forecast_timestamp": forecast_timestamp,
+            "horizon_minutes": horizon * 15,
+            "predicted_value": predicted_value,
+            "unit": unit,
+            "predicted_temperature_c": predicted_temperature,
+            "model_type": model_type,
+        })
 
-        results, forecasts = train_room_model(room_id, series)
+    return forecasts, evaluations
 
-        all_results.extend(results)
-        all_forecasts.extend(forecasts)
 
-    pd.DataFrame(all_results).to_csv(
-        RESULT_DIR / "evaluation_results.csv", index=False
+# ---------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------
+
+def main() -> None:
+
+    RESULT_DIR.mkdir(
+        parents=True,
+        exist_ok=True,
     )
 
-    pd.DataFrame(all_forecasts).to_csv(
-        RESULT_DIR / "forecasts.csv", index=False
+    logger.info("Starte Raumklima-Prognose.")
+
+    # 1. Load PostgreSQL data.
+    df = load_data_from_database()
+
+    latest_database_timestamp = df["start"].max()
+
+    all_room_series = {}
+    all_room_units = {}
+
+    # 2. Prepare time series per room and sensor.
+    for room_id, room_df in df.groupby("room_id"):
+
+        for sensor_type in SENSORS:
+
+            series = prepare_room_series(
+                room_df,
+                sensor_type,
+            )
+
+            if series.empty:
+                continue
+
+            all_room_series[(room_id, sensor_type)] = series
+
+            all_room_units[(room_id, sensor_type)] = (
+                get_sensor_unit(room_df, sensor_type)
+            )
+
+    # 3. Evaluate data quality.
+    eligibility, quality_results = evaluate_data_quality(
+        all_room_series,
+        latest_database_timestamp,
+    )
+
+    pd.DataFrame(quality_results).to_csv(
+        QUALITY_FILE,
+        index=False,
+    )
+
+    # 4. Train models.
+    all_forecasts = []
+    all_evaluations = []
+
+    for (room_id, sensor_type), series in all_room_series.items():
+
+        if not eligibility.get((room_id, sensor_type), False):
+            logger.info(
+                "Übersprungen: Raum=%s Sensor=%s",
+                room_id,
+                sensor_type,
+            )
+            continue
+
+        unit = all_room_units[(room_id, sensor_type)]
+
+        logger.info(
+            "Trainiere: Raum=%s Sensor=%s",
+            room_id,
+            sensor_type,
+        )
+
+        forecasts, evaluations = train_sensor_model(
+            room_id=room_id,
+            sensor_type=sensor_type,
+            series=series,
+            unit=unit,
+        )
+
+        all_forecasts.extend(forecasts)
+        all_evaluations.extend(evaluations)
+
+    # 5. Save results.
+    forecast_columns = [
+        "room_id",
+        "sensor_type",
+        "forecast_origin",
+        "forecast_timestamp",
+        "horizon_minutes",
+        "predicted_value",
+        "unit",
+        "predicted_temperature_c",
+        "model_type",
+    ]
+
+    evaluation_columns = [
+        "room_id",
+        "sensor_type",
+        "horizon_minutes",
+        "model_type",
+        "sample_count",
+        "validation_mae_random_forest",
+        "validation_mae_persistence",
+        "test_mae",
+        "test_rmse",
+    ]
+
+    forecasts_df = pd.DataFrame(
+        all_forecasts,
+        columns=forecast_columns,
+    )
+
+    evaluations_df = pd.DataFrame(
+        all_evaluations,
+        columns=evaluation_columns,
+    )
+
+    forecasts_df.to_csv(
+        FORECAST_FILE,
+        index=False,
+    )
+
+    evaluations_df.to_csv(
+        EVALUATION_FILE,
+        index=False,
     )
 
     summary = {
-        "total_rooms": int(len(quality)),
-        "eligible_rooms": int(len(eligible_rooms)),
-        "insufficient_data_rooms": int(
-            len(quality) - len(eligible_rooms)
+        "database_table": "public.room_climate",
+        "input_csv_used": False,
+        "training_timestamp": pd.Timestamp.now(
+            tz="UTC"
+        ).isoformat(),
+        "rooms_processed": int(
+            forecasts_df["room_id"].nunique()
+        ) if not forecasts_df.empty else 0,
+        "sensors_processed": (
+            sorted(forecasts_df["sensor_type"].unique().tolist())
+            if not forecasts_df.empty
+            else []
         ),
-        "trained_room_horizon_pairs": len(all_results),
-        "generated_forecasts": len(all_forecasts)
+        "forecast_count": len(forecasts_df),
+        "evaluation_count": len(evaluations_df),
+        "horizons_minutes": [
+            horizon * 15 for horizon in HORIZONS
+        ],
     }
 
-    with open(RESULT_DIR / "summary.json", "w") as f:
-        json.dump(summary, f, indent=4)
+    SUMMARY_FILE.write_text(
+        json.dumps(
+            summary,
+            indent=4,
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
 
-    print("\n======================================")
-    print("MULTI-ROOM FORECASTING ABGESCHLOSSEN")
-    print("======================================")
-    print(json.dumps(summary, indent=4))
+    logger.info(
+        "Training abgeschlossen. Forecasts: %s",
+        len(forecasts_df),
+    )
+
+    logger.info(
+        "Ergebnisse gespeichert unter: %s",
+        RESULT_DIR,
+    )
 
 
 if __name__ == "__main__":

@@ -1,6 +1,8 @@
 
 """API routes for AI-based room climate forecasting."""
 
+from typing import Literal
+
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 
 from app.config import settings
@@ -26,12 +28,17 @@ router = APIRouter(
 )
 
 
+SensorType = Literal["temperature", "humidity", "co2", "light"]
+ForecastHorizon = Literal[15, 30, 45, 60]
+
+
 @router.get(
     "/Forecasts/Rooms",
     response_model=ForecastRoomsResponse,
     summary="List all known rooms and their forecast status",
     description=(
         "Lists all known building rooms, including rooms without forecasts. "
+        "For each room, the available forecast sensors and horizons are returned. "
         "Forecast values are read from the current room climate forecast CSV. "
         "Rooms without forecasts are marked with status 'no_forecast'. "
         "Forecasts based on input data older than 24 hours are marked as stale."
@@ -82,9 +89,13 @@ async def get_rooms_with_forecasts(
 @router.get(
     "/Forecasts/Rooms/{RoomID}",
     response_model=RoomForecastsResponse,
-    summary="Get room temperature forecasts",
+    response_model_exclude_none=True,
+    summary="Get room climate forecasts",
     description=(
-        "Returns temperature forecasts from the current CSV for the selected room. "
+        "Returns forecasts for the selected room and sensor type. "
+        "Optionally, results can be restricted to a specific forecast horizon. "
+        "Supported sensors: temperature, humidity, co2 and light. "
+        "Supported horizons: 15, 30, 45 and 60 minutes. "
         "Results are sorted by target timestamp in descending order. "
         "The room identifier includes the building ID, e.g. A-A304."
     ),
@@ -92,6 +103,18 @@ async def get_rooms_with_forecasts(
 async def get_forecasts_for_room(
     RoomID: str = Path(
         description="Building and room identifier, e.g. A-A304."
+    ),
+    sensor_type: SensorType = Query(
+        default="temperature",
+        description=(
+            "Sensor type: temperature, humidity, co2 or light."
+        ),
+    ),
+    horizon_minutes: ForecastHorizon | None = Query(
+        default=None,
+        description=(
+            "Optional forecast horizon in minutes: 15, 30, 45 or 60."
+        ),
     ),
     limit: int = Query(
         default=100,
@@ -105,6 +128,8 @@ async def get_forecasts_for_room(
         forecasts = get_room_forecasts(
             room_id=RoomID,
             limit=limit,
+            sensor_type=sensor_type,
+            horizon_minutes=horizon_minutes,
         )
 
         return {
@@ -149,16 +174,29 @@ async def get_forecasts_for_room(
 @router.get(
     "/Forecasts/Rooms/{RoomID}/Latest",
     response_model=RoomForecastsResponse,
-    summary="Get latest room temperature forecast",
+    summary="Get latest room climate forecast",
     description=(
-        "Returns the latest forecast record for the selected room "
-        "from the current CSV. The latest forecast is not necessarily "
-        "current; check data_age_hours and is_stale."
+        "Returns the latest forecast record for the selected room and sensor. "
+        "Optionally, the result can be restricted to a specific forecast horizon. "
+        "The latest forecast is not necessarily current; check data_age_hours "
+        "and is_stale."
     ),
 )
 async def get_latest_room_forecast(
     RoomID: str = Path(
         description="Building and room identifier, e.g. A-A304."
+    ),
+    sensor_type: SensorType = Query(
+        default="temperature",
+        description=(
+            "Sensor type: temperature, humidity, co2 or light."
+        ),
+    ),
+    horizon_minutes: ForecastHorizon | None = Query(
+        default=None,
+        description=(
+            "Optional forecast horizon in minutes: 15, 30, 45 or 60."
+        ),
     ),
     _user: str = Depends(verify_basic_auth),
 ):
@@ -166,12 +204,16 @@ async def get_latest_room_forecast(
         forecasts = get_room_forecasts(
             room_id=RoomID,
             limit=1,
+            sensor_type=sensor_type,
+            horizon_minutes=horizon_minutes,
         )
 
         if not forecasts:
             raise HTTPException(
                 status_code=404,
-                detail=f"No forecasts found for room {RoomID}.",
+                detail=(
+                    f"No {sensor_type} forecasts found for room {RoomID}."
+                ),
             )
 
         return {
@@ -219,25 +261,37 @@ async def get_latest_room_forecast(
 @router.get(
     "/Forecasts/Rooms/{RoomID}/Summary",
     response_model=RoomForecastSummary,
-    summary="Get room forecast statistics",
+    summary="Get room climate forecast statistics",
     description=(
-        "Returns statistical information about the latest forecast "
-        "generation for the selected room."
+        "Returns statistical information about the latest forecast generation "
+        "for the selected room and sensor type. "
+        "Statistics include average, minimum and maximum predicted values."
     ),
 )
 async def get_room_forecast_statistics(
     RoomID: str = Path(
         description="Building and room identifier, e.g. A-A304."
     ),
+    sensor_type: SensorType = Query(
+        default="temperature",
+        description=(
+            "Sensor type: temperature, humidity, co2 or light."
+        ),
+    ),
     _user: str = Depends(verify_basic_auth),
 ):
     try:
-        summary = get_room_forecast_summary(RoomID)
+        summary = get_room_forecast_summary(
+            room_id=RoomID,
+            sensor_type=sensor_type,
+        )
 
         if summary is None:
             raise HTTPException(
                 status_code=404,
-                detail=f"No forecasts found for room {RoomID}.",
+                detail=(
+                    f"No {sensor_type} forecasts found for room {RoomID}."
+                ),
             )
 
         return summary
