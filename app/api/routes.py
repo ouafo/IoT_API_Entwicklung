@@ -1,32 +1,68 @@
+
 """API routes für OData-Service."""
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
+import re
+
 from fastapi import APIRouter, Depends, Query, Path, HTTPException
 from fastapi.responses import JSONResponse
-import re
+
 from app.config import settings
 from app.database import connection
-from app.models. measurement import MeasurementResponse, RoomResponse
+from app.models.measurement import MeasurementResponse, RoomResponse
 from app.api.odata_helpers import parse_filter, parse_orderby
 from app.auth.basic_auth import verify_basic_auth
 from app.logger import logger
 from app.services.measurement_service import get_measurements, get_all_rooms
-from app.exceptions import InvalidDatetimeException, TimeRangeException, FilterException
+from app.exceptions import (
+    InvalidDatetimeException,
+    TimeRangeException,
+    FilterException
+)
+
 
 router = APIRouter(
     prefix=settings.API_PREFIX,
     tags=["Building & Room Management"]
 )
 
+
+# ============================================================
+# Default-Werte für Swagger UI
+# ============================================================
+
+# Werden beim Import des API-Moduls berechnet.
+# StartDateTime = aktuelle lokale Uhrzeit
+# EndDateTime   = StartDateTime + 1 Stunde
+
+_DEFAULT_START = datetime.now().astimezone().replace(microsecond=0)
+_DEFAULT_END = _DEFAULT_START + timedelta(hours=1)
+DEFAULT_START_DATETIME = _DEFAULT_START.isoformat()
+DEFAULT_END_DATETIME = _DEFAULT_END.isoformat()
+
+
+# ============================================================
+# OData-Konfiguration
+# ============================================================
+
 ALLOWED_FILTER_COLUMNS = [
-    "RoomID", "BuildingID", "SensorTypeCode",
-    "StartDateTime", "EndDateTime", "MeasureContent", "MeasureUnitCode"
+    "RoomID",
+    "BuildingID",
+    "SensorTypeCode",
+    "StartDateTime",
+    "EndDateTime",
+    "MeasureContent",
+    "MeasureUnitCode"
 ]
 
 ALLOWED_ORDERBY_COLUMNS = [
-    "RoomID", "BuildingID", "SensorTypeCode",
-    "StartDateTime", "EndDateTime", "MeasureContent"
+    "RoomID",
+    "BuildingID",
+    "SensorTypeCode",
+    "StartDateTime",
+    "EndDateTime",
+    "MeasureContent"
 ]
 
 ORDERBY_COLUMN_ALIASES = {
@@ -39,36 +75,134 @@ ORDERBY_COLUMN_ALIASES = {
 }
 
 
+# ============================================================
+# Hilfsfunktionen
+# ============================================================
+
 def _parse_iso8601(dt_str: str) -> datetime:
-    """Parse ISO 8601 datetime string."""
+    """Parse ISO-8601 datetime string."""
+
     try:
         if dt_str.endswith("Z"):
             dt_str = dt_str[:-1] + "+00:00"
-        return datetime.fromisoformat(dt_str)
-    except ValueError: 
+
+        parsed = datetime.fromisoformat(dt_str)
+
+        if parsed.tzinfo is None:
+            parsed = parsed.astimezone()
+
+        return parsed
+
+    except ValueError:
         raise InvalidDatetimeException(dt_str, "datetime")
 
 
-@router.get("/health", tags=["System & Monitoring"])
+async def _get_room_by_room_id(room_id: str):
+    """
+    Ermittelt einen Raum anhand seiner RoomID.
+
+    Die BuildingID wird intern aus der Raumliste ermittelt.
+    """
+
+    rooms_response = await get_all_rooms(
+        limit=settings.MAX_PAGE_SIZE,
+        offset=0,
+        include_count=False
+    )
+
+    rooms = (
+        rooms_response.value
+        if hasattr(rooms_response, "value")
+        else rooms_response
+    )
+
+    matching_rooms = []
+
+    for room in rooms:
+        if isinstance(room, dict):
+            room_data = room
+        elif hasattr(room, "model_dump"):
+            room_data = room.model_dump()
+        else:
+            room_data = room.dict()
+
+        if room_data.get("RoomID") == room_id:
+            matching_rooms.append(room_data)
+
+    if not matching_rooms:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Room '{room_id}' wurde nicht gefunden."
+        )
+
+    building_ids = {
+        room.get("BuildingID")
+        for room in matching_rooms
+        if room.get("BuildingID") is not None
+    }
+
+    if len(building_ids) > 1:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"RoomID '{room_id}' ist mehreren Gebäuden zugeordnet. "
+                "Eine eindeutige Zuordnung ist nicht möglich."
+            )
+        )
+
+    if not building_ids:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Keine BuildingID für RoomID '{room_id}' gefunden."
+        )
+
+    building_id = next(iter(building_ids))
+
+    room_data = next(
+        room for room in matching_rooms
+        if room.get("BuildingID") == building_id
+    )
+
+    return room_data, building_id
+
+
+# ============================================================
+# Health Check
+# ============================================================
+
+@router.get(
+    "/health",
+    tags=["System & Monitoring"]
+)
 async def health_check():
     """Health check endpoint with database connectivity test."""
+
     db_status = "unknown"
     latency_ms = None
-    
+
     try:
         import time
+
         start = time.perf_counter()
         conn = connection.get_conn()
+
         try:
             cur = conn.cursor()
             cur.execute("SELECT 1")
             cur.fetchone()
-            latency_ms = round((time.perf_counter() - start) * 1000, 2)
+
+            latency_ms = round(
+                (time.perf_counter() - start) * 1000,
+                2
+            )
+
             db_status = "ok"
+
         finally:
             connection.put_conn(conn)
+
     except Exception as e:
-        logger. error(f"Health check failed: {e}")
+        logger.error(f"Health check failed: {e}")
         db_status = "unhealthy"
 
     return {
@@ -82,25 +216,35 @@ async def health_check():
     }
 
 
-@router.get("/Rooms", response_model=RoomResponse)
+# ============================================================
+# GET /Rooms
+# ============================================================
+
+@router.get(
+    "/Rooms",
+    response_model=RoomResponse
+)
 async def get_rooms(
     filter: Optional[str] = Query(None, alias="$filter"),
     orderby: Optional[str] = Query(None, alias="$orderby"),
-    top: Optional[int] = Query(settings.DEFAULT_PAGE_SIZE, alias="$top"),
+    top: Optional[int] = Query(
+        settings.DEFAULT_PAGE_SIZE,
+        alias="$top"
+    ),
     skip: Optional[int] = Query(0, alias="$skip"),
     count: Optional[bool] = Query(True, alias="$count"),
     _user: str = Depends(verify_basic_auth),
 ):
     """Get all rooms with optional OData filtering."""
+
     building_id = None
-    
-    # Simple filter parsing for BuildingID
-    if filter: 
-        if "BuildingID eq" in filter:
-            parts = filter.split("'")
-            if len(parts) >= 2:
-                building_id = parts[1]
-    
+
+    if filter and "BuildingID eq" in filter:
+        parts = filter.split("'")
+
+        if len(parts) >= 2:
+            building_id = parts[1]
+
     return await get_all_rooms(
         building_id=building_id,
         limit=min(top, settings.MAX_PAGE_SIZE),
@@ -109,141 +253,237 @@ async def get_rooms(
     )
 
 
+# ============================================================
+# GET /Rooms('{RoomID}')
+# ============================================================
+
 @router.get("/Rooms('{RoomID}')")
 async def get_single_room(
-    RoomID: str = Path(..., description="Format: BuildingID-RoomID (e.g., 'A-A203')"),
+    RoomID: str = Path(
+        ...,
+        description="Room identifier, e.g. A203"
+    ),
     _user: str = Depends(verify_basic_auth),
 ):
-    """Get a single room by composite key."""
-    parts = RoomID.split("-")
-    if len(parts) != 2:
-        return JSONResponse(
-            status_code=400,
-            content={"error": "Invalid RoomID format. Use 'BuildingID-RoomID'"}
-        )
-    
-    building_id, room_id = parts
-    
-    from app.database. queries import get_rooms
-    rooms = get_rooms(building_id=building_id, limit=1000)
-    room = next((r for r in rooms if r["RoomID"] == room_id and r["BuildingID"] == building_id), None)
-    
-    if not room:
-        return JSONResponse(
-            status_code=404,
-            content={"error": "Room not found"}
-        )
-    
+    """Get a single room by RoomID. BuildingID is resolved internally."""
+
+    room, building_id = await _get_room_by_room_id(RoomID)
+
     return {
-        "@odata.context": f"{settings.API_PREFIX}/$metadata#Rooms/$entity",
+        "@odata.context": (
+            f"{settings.API_PREFIX}/$metadata#Rooms/$entity"
+        ),
         **room
     }
 
 
-@router. get("/Rooms('{RoomID}')/Measurements", response_model=MeasurementResponse)
+# ============================================================
+# GET /Rooms('{RoomID}')/Measurements
+# ============================================================
+
+@router.get(
+    "/Rooms('{RoomID}')/Measurements",
+    response_model=MeasurementResponse
+)
 async def get_room_measurements(
-    RoomID: str = Path(..., description="Format: BuildingID-RoomID (e.g., 'A-A203')"),
-    StartDateTime: str = Query(..., description="ISO 8601 start time (e.g., 2025-01-01T00:00:00Z)"),
-    EndDateTime: str = Query(... , description="ISO 8601 end time"),
+
+    RoomID: str = Path(
+        ...,
+        description="Room identifier, e.g. A203"
+    ),
+
+    # Pflichtparameter:
+    # Die Default-Werte werden in main.py in OpenAPI ergänzt.
+    # Query(...) stellt sicher, dass beide Parameter required sind.
+
+    StartDateTime: str = Query(
+        ...,
+        description=(
+            "Required ISO-8601 start time. "
+            "Current local date and time."
+        )
+    ),
+
+    EndDateTime: str = Query(
+        ...,
+        description=(
+            "Required ISO-8601 end time. "
+            "One hour after StartDateTime."
+        )
+    ),
+
     SensorTypeCode: Optional[str] = Query(
         None,
-        description="Sensor type:  temperature, humidity, co2, light, motion, power, energy_import"
+        description=(
+            "Sensor type: temperature, humidity, co2, light, "
+            "motion, power, energy_import"
+        )
     ),
-    filter: Optional[str] = Query(None, alias="$filter", description="OData filter (e.g., MeasureContent gt 22)"),
-    orderby: Optional[str] = Query("StartDateTime ASC", alias="$orderby", description="OData ordering"),
-    top: Optional[int] = Query(settings.DEFAULT_PAGE_SIZE, alias="$top", description="Limit (max 10000)"),
-    skip: Optional[int] = Query(0, alias="$skip", description="Offset for pagination"),
-    count: Optional[bool] = Query(True, alias="$count", description="Include total count"),
+
+    filter: Optional[str] = Query(
+        None,
+        alias="$filter",
+        description="OData filter, e.g. MeasureContent gt 22"
+    ),
+
+    orderby: Optional[str] = Query(
+        "StartDateTime ASC",
+        alias="$orderby",
+        description="OData ordering"
+    ),
+
+    top: Optional[int] = Query(
+        settings.DEFAULT_PAGE_SIZE,
+        alias="$top",
+        description="Limit (max 10000)"
+    ),
+
+    skip: Optional[int] = Query(
+        0,
+        alias="$skip",
+        description="Offset for pagination"
+    ),
+
+    count: Optional[bool] = Query(
+        True,
+        alias="$count",
+        description="Include total count"
+    ),
+
     _user: str = Depends(verify_basic_auth),
 ):
     """
-    Get measurements for a room with full OData support.
-    
-    Supports:
-    - $filter: OData filter with API field names (e.g., MeasureContent gt 22)
-    - $orderby:  Sorting (e.g., StartDateTime desc)
-    - $top/$skip: Pagination
-    - $count: Total count
+    Get measurements for a room with OData support.
+
+    RoomID:
+        Room identifier, e.g. A203.
+
+    BuildingID:
+        Resolved internally.
+
+    StartDateTime:
+        Required ISO-8601 start timestamp.
+
+    EndDateTime:
+        Required ISO-8601 end timestamp.
     """
-    # Validate $top limit
+
+    # --------------------------------------------------------
+    # Validate pagination
+    # --------------------------------------------------------
+
     if top > settings.MAX_PAGE_SIZE:
         raise HTTPException(
             status_code=400,
-            detail=f"$top ({top}) ist zu groß. Maximal erlaubt: {settings.MAX_PAGE_SIZE}"
+            detail=(
+                f"$top ({top}) ist zu groß. "
+                f"Maximal erlaubt: {settings.MAX_PAGE_SIZE}"
+            )
         )
-    
-    # Parse RoomID (Format: BuildingID-RoomID)
-    parts = RoomID.split("-")
-    if len(parts) != 2:
-        return JSONResponse(
-            status_code=400,
-            content={"error": "Invalid RoomID format. Use 'BuildingID-RoomID'"}
-        )
-    building_id, room_id = parts
-    
-    # Parse time range
-    start_dt = None
-    end_dt = None
-    if StartDateTime:
-        start_dt = _parse_iso8601(StartDateTime)
-    if EndDateTime:
-        end_dt = _parse_iso8601(EndDateTime)
-    
+
+    # --------------------------------------------------------
+    # Resolve RoomID and BuildingID
+    # --------------------------------------------------------
+
+    room, building_id = await _get_room_by_room_id(RoomID)
+
+    # --------------------------------------------------------
+    # Parse datetime parameters
+    # --------------------------------------------------------
+
+    start_dt = _parse_iso8601(StartDateTime)
+    end_dt = _parse_iso8601(EndDateTime)
+
+    # --------------------------------------------------------
     # Validate time range
-    if start_dt and end_dt and start_dt > end_dt:
-        raise TimeRangeException(StartDateTime, EndDateTime)
-    
+    # --------------------------------------------------------
+
+    if start_dt > end_dt:
+        raise TimeRangeException(
+            StartDateTime,
+            EndDateTime
+        )
+
+    # --------------------------------------------------------
     # Process OData $filter
+    # --------------------------------------------------------
+
     filter_clause = None
     filter_params = None
+
     if filter:
-        # Basic validation
+
         if not re.match(
-            r"^[\w_]+ (eq|ne|gt|lt|ge|le) ((-?\d+(\.\d+)?)|('[^']*')|true|false|null)$",
+            r"^[\w_]+ (eq|ne|gt|lt|ge|le) "
+            r"((-?\d+(\.\d+)?)|('[^']*')|true|false|null)$",
             filter
         ):
-            raise HTTPException(status_code=400, detail="Ungültiger OData-Filter")
-        
-        spaltenname = filter.split()[0]
-        if spaltenname not in ALLOWED_FILTER_COLUMNS:
             raise HTTPException(
                 status_code=400,
-                detail=f"Ungültige Filterspalte: {spaltenname}"
+                detail="Ungültiger OData-Filter"
             )
-        
-        # MAPPING FROM API FIELDS TO DB COLUMNS
+
+        column_name = filter.split()[0]
+
+        if column_name not in ALLOWED_FILTER_COLUMNS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Ungültige Filterspalte: {column_name}"
+            )
+
         filter_column_map = {
             "RoomID": "room_location",
             "BuildingID": "building",
             "StartDateTime": "start",
             "EndDateTime": "stop"
         }
-        
-        # Add sensor-specific mapping
-        if SensorTypeCode and SensorTypeCode in settings.SENSOR_MAPPINGS:
+
+        if (
+            SensorTypeCode
+            and SensorTypeCode in settings.SENSOR_MAPPINGS
+        ):
             mapping = settings.SENSOR_MAPPINGS[SensorTypeCode]
-            filter_column_map["MeasureContent"] = f'"{mapping["value_column"]}"'
-            filter_column_map["MeasureUnitCode"] = f'"{mapping["unit_column"]}"'
-        
-        try: 
+
+            filter_column_map["MeasureContent"] = (
+                f'"{mapping["value_column"]}"'
+            )
+
+            filter_column_map["MeasureUnitCode"] = (
+                f'"{mapping["unit_column"]}"'
+            )
+
+        try:
             filter_clause, filter_params = parse_filter(
                 filter,
                 ALLOWED_FILTER_COLUMNS,
                 filter_column_map
             )
+
         except Exception as e:
             raise FilterException(filter, str(e))
-    
+
+    # --------------------------------------------------------
     # Process OData $orderby
+    # --------------------------------------------------------
+
     orderby_clause = '"StartDateTime" ASC'
+
     if orderby:
-        parsed_orderby = parse_orderby(orderby, ALLOWED_ORDERBY_COLUMNS, ORDERBY_COLUMN_ALIASES)
+        parsed_orderby = parse_orderby(
+            orderby,
+            ALLOWED_ORDERBY_COLUMNS,
+            ORDERBY_COLUMN_ALIASES
+        )
+
         if parsed_orderby:
             orderby_clause = parsed_orderby
-    
+
+    # --------------------------------------------------------
     # Fetch measurements
+    # --------------------------------------------------------
+
     return await get_measurements(
-        room_id=room_id,
+        room_id=RoomID,
         building_id=building_id,
         sensor_type=SensorTypeCode,
         start_time=start_dt,
@@ -258,44 +498,69 @@ async def get_room_measurements(
     )
 
 
-@router.get("/$metadata", tags=["API Metadata"])
-async def get_metadata(_user: str = Depends(verify_basic_auth)):
+# ============================================================
+# GET /$metadata
+# ============================================================
+
+@router.get(
+    "/$metadata",
+    tags=["API Metadata"]
+)
+async def get_metadata(
+    _user: str = Depends(verify_basic_auth)
+):
     """OData CSDL metadata (Entity Data Model)."""
-    xml = f"""<? xml version="1.0" encoding="UTF-8"?>
-<edmx:Edmx xmlns:edmx="http://docs.oasis-open.org/odata/ns/edmx" Version="4.0">
+
+    xml = """<?xml version="1.0" encoding="UTF-8"?>
+<edmx:Edmx
+    xmlns:edmx="http://docs.oasis-open.org/odata/ns/edmx"
+    Version="4.0">
   <edmx:DataServices>
-    <Schema xmlns="http://docs.oasis-open.org/odata/ns/edm" Namespace="KICAGEM">
+    <Schema
+        xmlns="http://docs.oasis-open.org/odata/ns/edm"
+        Namespace="KICAGEM">
+
       <EntityType Name="Room">
         <Key>
           <PropertyRef Name="RoomKey"/>
         </Key>
         <Property Name="RoomKey" Type="Edm.String" Nullable="false"/>
         <Property Name="RoomID" Type="Edm.String" Nullable="false"/>
-        <Property Name="BuildingID" Type="Edm. String" Nullable="false"/>
+        <Property Name="BuildingID" Type="Edm.String" Nullable="false"/>
         <Property Name="ApplicationName" Type="Edm.String"/>
-        <NavigationProperty Name="Measurements" Type="Collection(KICAGEM.Measurement)"/>
+        <NavigationProperty
+            Name="Measurements"
+            Type="Collection(KICAGEM.Measurement)"/>
       </EntityType>
+
       <EntityType Name="Measurement">
         <Key>
           <PropertyRef Name="MeasurementID"/>
         </Key>
-        <Property Name="MeasurementID" Type="Edm. Guid" Nullable="false"/>
+        <Property Name="MeasurementID" Type="Edm.Guid" Nullable="false"/>
         <Property Name="RoomID" Type="Edm.String" Nullable="false"/>
         <Property Name="BuildingID" Type="Edm.String" Nullable="false"/>
         <Property Name="SensorTypeCode" Type="Edm.String" Nullable="false"/>
-        <Property Name="StartDateTime" Type="Edm. DateTimeOffset" Nullable="false"/>
+        <Property Name="StartDateTime" Type="Edm.DateTimeOffset" Nullable="false"/>
         <Property Name="EndDateTime" Type="Edm.DateTimeOffset" Nullable="false"/>
         <Property Name="MeasureContent" Type="Edm.Double" Nullable="false"/>
         <Property Name="MeasureUnitCode" Type="Edm.String" Nullable="false"/>
       </EntityType>
+
       <EntityContainer Name="Container">
         <EntitySet Name="Rooms" EntityType="KICAGEM.Room">
-          <NavigationPropertyBinding Path="Measurements" Target="Measurements"/>
+          <NavigationPropertyBinding
+              Path="Measurements"
+              Target="Measurements"/>
         </EntitySet>
         <EntitySet Name="Measurements" EntityType="KICAGEM.Measurement"/>
       </EntityContainer>
+
     </Schema>
   </edmx:DataServices>
 </edmx:Edmx>"""
-    
-    return JSONResponse(content=xml, media_type="application/xml")
+
+    return JSONResponse(
+        content=xml,
+        media_type="application/xml"
+    )

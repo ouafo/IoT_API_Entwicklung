@@ -1,7 +1,9 @@
+
 """Measurement data models using Pydantic."""
 
 from pydantic import BaseModel, Field
 from typing import List, Optional
+
 
 class Measurement(BaseModel):
     RoomID: str
@@ -12,13 +14,6 @@ class Measurement(BaseModel):
     MeasureContent: float
     MeasureUnitCode: str
 
-class MeasurementResponse(BaseModel):
-    odata_context: str = Field(..., alias="@odata.context")
-    odata_count: Optional[int] = Field(None, alias="@odata.count")
-    odata_nextLink: Optional[str] = Field(None, alias="@odata.nextLink")
-    value: List[Measurement]
-    class Config:
-        populate_by_name = True
 
 class Room(BaseModel):
     RoomID: str
@@ -26,10 +21,30 @@ class Room(BaseModel):
     RoomLocation: Optional[str] = None
     ApplicationName: Optional[str] = None
 
+    room_type: Optional[str] = None
+    capacity: Optional[int] = None
+    area: Optional[float] = None
+    window_count: Optional[int] = None
+
+
+class MeasurementResponse(BaseModel):
+    odata_context: str = Field(..., alias="@odata.context")
+    odata_count: Optional[int] = Field(None, alias="@odata.count")
+    odata_nextLink: Optional[str] = Field(None, alias="@odata.nextLink")
+
+    Room: Optional[Room] = None
+    value: List[Measurement]
+
+    class Config:
+        populate_by_name = True
+
+
 class RoomResponse(BaseModel):
     odata_context: str = Field(..., alias="@odata.context")
     odata_count: Optional[int] = Field(None, alias="@odata.count")
     odata_nextLink: Optional[str] = Field(None, alias="@odata.nextLink")
+
     value: List[Room]
+
     class Config:
         populate_by_name = True
