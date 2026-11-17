@@ -1,4 +1,3 @@
-
 """Measurement data models using Pydantic."""
 
 from pydantic import BaseModel, Field
@@ -22,9 +21,16 @@ class Room(BaseModel):
     ApplicationName: Optional[str] = None
 
     room_type: Optional[str] = None
-    capacity: Optional[int] = None
-    area: Optional[float] = None
-    window_count: Optional[int] = None
+    capacity: Optional[int] = Field(default=40)
+    area: Optional[float] = Field(default=100.0)
+    window_count: Optional[int] = Field(default=4)
+
+
+class RoomTimeRange(BaseModel):
+    RoomID: str
+    BuildingID: str
+    StartDateTime: str
+    EndDateTime: str
 
 
 class MeasurementResponse(BaseModel):

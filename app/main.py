@@ -1,8 +1,9 @@
 """FastAPI application factory."""
 
-import time
+import time as time_module
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
+from datetime import datetime, time as datetime_time
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
@@ -26,71 +27,50 @@ from app.logger import logger
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Initialize and close the database connection pool."""
-
-    logger.info("Startup: DB Pool initialisieren")
+    logger.info("Startup: Initializing DB pool")
 
     try:
         connection.init_db_pool()
-        logger.info("DB Pool initialisiert")
+        logger.info("DB pool initialized")
 
     except Exception as exc:
-        logger.error("DB Pool init failed", exc_info=exc)
+        logger.error("DB pool init failed", exc_info=exc)
 
     try:
         yield
 
     finally:
-        logger.info("Shutdown: DB Pool schließen")
+        logger.info("Shutdown: Closing DB pool")
 
         try:
             connection.close_db_pool()
-            logger.info("DB Pool geschlossen")
+            logger.info("DB pool closed")
 
         except Exception as exc:
-            logger.error("DB Pool close error", exc_info=exc)
+            logger.error("DB pool close error", exc_info=exc)
 
 
 def create_app() -> FastAPI:
     """Create the FastAPI application."""
-
     app = FastAPI(
         title=settings.API_TITLE,
         version=settings.API_VERSION,
-        description="IoT Analytics Service mit OData URL Conventions",
+        description="IoT Analytics Service with OData URL Conventions",
         lifespan=lifespan,
         docs_url="/docs",
         redoc_url="/redoc",
         openapi_url="/openapi.json",
     )
 
-    # --------------------------------------------------------
-    # API routers
-    # --------------------------------------------------------
-
-    # System & Monitoring und API Metadata zuerst
+    # Register API routers
     app.include_router(routes.router)
-
-    # Danach die fachlichen APIs
     app.include_router(energy_forecast_routes.router)
     app.include_router(room_forecast_routes.router)
     app.include_router(weather_routes.router)
     app.include_router(weather_forecast_routes.router)
 
-    # --------------------------------------------------------
-    # Custom OpenAPI schema
-    # --------------------------------------------------------
-
     def custom_openapi():
-        """
-        Add visible default values to required datetime parameters.
-
-        The parameters remain required in OpenAPI.
-        Swagger UI displays the defaults as editable values.
-        """
-
-        if app.openapi_schema:
-            return app.openapi_schema
-
+        """Generate OpenAPI schema with required StartDateTime/EndDateTime pre-filled for Swagger UI."""
         openapi_schema = get_openapi(
             title=app.title,
             version=app.version,
@@ -98,50 +78,39 @@ def create_app() -> FastAPI:
             routes=app.routes,
         )
 
-        measurements_path = (
-            f"{settings.API_PREFIX}/Rooms('{{RoomID}}')/Measurements"
+        # Pre-fill today 00:00:00 and current datetime so user can edit them in Swagger UI
+        now = datetime.now().astimezone()
+        start_datetime = datetime.combine(
+            now.date(),
+            datetime_time.min,
+            tzinfo=now.tzinfo,
         )
 
-        operation = (
-            openapi_schema
-            .get("paths", {})
-            .get(measurements_path, {})
-            .get("get")
-        )
+        start_default = start_datetime.isoformat(timespec="seconds")
+        end_default = now.isoformat(timespec="seconds")
 
-        if operation:
-            for parameter in operation.get("parameters", []):
-
-                if parameter.get("in") != "query":
-                    continue
-
-                if parameter.get("name") == "StartDateTime":
+        path = f"{settings.API_PREFIX}/Rooms('{{RoomID}}')/Measurements"
+        if path in openapi_schema.get("paths", {}):
+            parameters = openapi_schema["paths"][path]["get"].get("parameters", [])
+            for parameter in parameters:
+                if parameter["name"] == "StartDateTime":
                     parameter["required"] = True
-                    parameter.setdefault("schema", {})[
-                        "default"
-                    ] = routes.DEFAULT_START_DATETIME
-
-                elif parameter.get("name") == "EndDateTime":
+                    parameter["example"] = start_default
+                    parameter.setdefault("schema", {})["default"] = start_default
+                elif parameter["name"] == "EndDateTime":
                     parameter["required"] = True
-                    parameter.setdefault("schema", {})[
-                        "default"
-                    ] = routes.DEFAULT_END_DATETIME
+                    parameter["example"] = end_default
+                    parameter.setdefault("schema", {})["default"] = end_default
 
-        app.openapi_schema = openapi_schema
-
-        return app.openapi_schema
+        return openapi_schema
 
     app.openapi = custom_openapi
 
-    # --------------------------------------------------------
     # Request logging middleware
-    # --------------------------------------------------------
-
     @app.middleware("http")
     async def log_requests(request: Request, call_next):
         """Log incoming HTTP requests."""
-
-        start = time.perf_counter()
+        start = time_module.perf_counter()
         status_code = 500
 
         try:
@@ -150,13 +119,11 @@ def create_app() -> FastAPI:
             return response
 
         finally:
-            duration_ms = (time.perf_counter() - start) * 1000
-
+            duration_ms = (time_module.perf_counter() - start) * 1000
             log_level = logger.info
 
             if 400 <= status_code < 500:
                 log_level = logger.warning
-
             elif status_code >= 500:
                 log_level = logger.error
 
@@ -175,17 +142,13 @@ def create_app() -> FastAPI:
                 },
             )
 
-    # --------------------------------------------------------
     # Application-specific exception handler
-    # --------------------------------------------------------
-
     @app.exception_handler(TelemetryException)
     async def telemetry_exception_handler(
         request: Request,
         exc: TelemetryException,
     ):
         """Handle application-specific telemetry exceptions."""
-
         logger.error(
             f"Telemetry exception: {exc.message}",
             exc_info=exc,
@@ -202,17 +165,13 @@ def create_app() -> FastAPI:
             content=response,
         )
 
-    # --------------------------------------------------------
     # General exception handler
-    # --------------------------------------------------------
-
     @app.exception_handler(Exception)
     async def general_exception_handler(
         request: Request,
         exc: Exception,
     ):
         """Handle unexpected exceptions."""
-
         logger.error(
             f"Unhandled exception: {str(exc)}",
             exc_info=exc,

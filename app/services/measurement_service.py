@@ -1,7 +1,6 @@
-
 """Measurement Service Layer."""
 
-from typing import List, Optional, Any
+from typing import List, Optional, Any, Tuple
 from datetime import datetime
 
 from starlette.concurrency import run_in_threadpool
@@ -19,8 +18,7 @@ from app.exceptions import DatabaseException
 
 
 async def get_room_by_id(room_id: str) -> Optional[Room]:
-    """Einen Raum anhand seiner RoomID ermitteln."""
-
+    """Fetch a single room by its RoomID."""
     try:
         room_dicts = await run_in_threadpool(
             queries.get_room_by_id,
@@ -37,12 +35,11 @@ async def get_room_by_id(room_id: str) -> Optional[Room]:
 
         if len(building_ids) > 1:
             raise ValueError(
-                f"RoomID '{room_id}' ist mehreren Gebäuden zugeordnet: "
+                f"RoomID '{room_id}' is assigned to multiple buildings: "
                 f"{sorted(building_ids)}"
             )
 
         if len(room_dicts) > 1:
-            # Mehrere identische Zuordnungen sind nicht erforderlich.
             room_dicts = [room_dicts[0]]
 
         return Room(**room_dicts[0])
@@ -53,6 +50,56 @@ async def get_room_by_id(room_id: str) -> Optional[Room]:
     except Exception as e:
         logger.error(f"Get room by ID failed: {e}")
         raise DatabaseException("Get room by ID failed", e)
+
+
+async def get_room_measurement_bounds(
+    room_id: Optional[str] = None,
+    building_id: Optional[str] = None,
+    sensor_type: Optional[str] = None,
+) -> Tuple[Optional[datetime], Optional[datetime]]:
+    """
+    Fetch earliest and latest available measurement timestamps
+    for a given room and optional sensor type.
+    """
+    try:
+        return await run_in_threadpool(
+            queries.get_room_measurement_bounds,
+            room_id,
+            building_id,
+            sensor_type
+        )
+
+    except Exception as e:
+        logger.error(f"Get room measurement bounds failed: {e}")
+        raise DatabaseException(
+            "Get room measurement bounds failed",
+            e
+        )
+
+
+async def get_latest_measurement_time(
+    room_id: Optional[str] = None,
+    building_id: Optional[str] = None,
+    sensor_type: Optional[str] = None,
+) -> Optional[datetime]:
+    """
+    Fetch the latest available measurement timestamp
+    for a given room and optional sensor type.
+    """
+    try:
+        return await run_in_threadpool(
+            queries.get_latest_measurement_time,
+            room_id,
+            building_id,
+            sensor_type
+        )
+
+    except Exception as e:
+        logger.error(f"Get latest measurement time failed: {e}")
+        raise DatabaseException(
+            "Get latest measurement time failed",
+            e
+        )
 
 
 async def get_measurements(
@@ -70,7 +117,7 @@ async def get_measurements(
     room_key: Optional[str] = None,
     room: Optional[Room] = None,
 ) -> MeasurementResponse:
-    """Messwerte eines Raums aus der Datenbank holen."""
+    """Fetch room measurements from the database."""
 
     def _execute():
         sql, params = queries.build_measurements_query(
@@ -87,7 +134,6 @@ async def get_measurements(
         )
 
         conn = None
-
         try:
             conn = connection.get_conn()
             cur = conn.cursor()
@@ -95,7 +141,6 @@ async def get_measurements(
             rows = cur.fetchall()
 
             measurements = []
-
             for row in rows:
                 measurements.append(
                     Measurement(
@@ -133,7 +178,6 @@ async def get_measurements(
         raise DatabaseException("Service execution failed", e)
 
     total_count = 0
-
     if include_count:
         total_count = await run_in_threadpool(
             queries.count_measurements,
@@ -145,7 +189,6 @@ async def get_measurements(
         )
 
     context = f"{settings.API_PREFIX}/$metadata#Measurements"
-
     if room_key:
         context = (
             f"{settings.API_PREFIX}/$metadata"
@@ -153,7 +196,6 @@ async def get_measurements(
         )
 
     next_link = None
-
     if len(measurements) == limit and offset + limit < total_count:
         next_link = (
             f"{settings.API_PREFIX}/Rooms('{room_key}')/Measurements"
@@ -175,7 +217,7 @@ async def get_all_rooms(
     offset: int = 0,
     include_count: bool = True,
 ) -> RoomResponse:
-    """Alle Räume holen."""
+    """Fetch all rooms."""
 
     def _execute():
         return queries.get_rooms(
@@ -193,7 +235,6 @@ async def get_all_rooms(
         raise DatabaseException("Get rooms failed", e)
 
     total_count = len(rooms)
-
     next_link = None
 
     if len(rooms) == limit:
