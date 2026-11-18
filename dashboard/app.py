@@ -195,6 +195,7 @@ def build_mini_comparison_chart(
     )
     return fig
 
+
 with st.sidebar:
     st.title("🏢 KICaGEM")
     st.caption("Campus-, Gebäude- & Energiemanagement")
@@ -265,7 +266,14 @@ except RuntimeError:
     stations = []
 
 rooms_df = pd.DataFrame(rooms)
-energy_room_ids = [r["full_room_id"] for r in energy_rooms if "full_room_id" in r]
+if not rooms_df.empty and "room_id" in rooms_df.columns:
+    rooms_df["room_id"] = rooms_df["room_id"].astype(str)
+    rooms_df = rooms_df.drop_duplicates(subset=["room_id"], keep="first")
+
+energy_room_ids = [
+    str(r["room_id"]) for r in energy_rooms
+    if isinstance(r, dict) and r.get("room_id")
+]
 
 buildings = (
     sorted(rooms_df["building"].dropna().unique().tolist())
@@ -330,7 +338,7 @@ if not rooms_df.empty:
         )
 
     building_rooms_df = rooms_df[rooms_df["building"] == preview_building]
-    preview_room_options = building_rooms_df["full_room_id"].tolist()
+    preview_room_options = building_rooms_df["room_id"].tolist()
 
     with sel_col2:
         preview_room = st.selectbox(
@@ -340,7 +348,7 @@ if not rooms_df.empty:
         )
 
     selected_meta = building_rooms_df[
-        building_rooms_df["full_room_id"] == preview_room
+        building_rooms_df["room_id"] == preview_room
     ].iloc[0].to_dict()
 
     with sel_col3:
@@ -464,16 +472,15 @@ if not rooms_df.empty:
         st.plotly_chart(fig_buildings, use_container_width=True)
 
     with struct_col2:
-        rooms_df["Energiezähler"] = rooms_df["full_room_id"].isin(energy_room_ids).map(
+        rooms_df["Energiezähler"] = rooms_df["room_id"].isin(energy_room_ids).map(
             {True: "✅ Ja", False: "–"}
         )
         display_df = rooms_df[
-            ["building", "room_id", "full_room_id", "capacity", "area", "window_count", "Energiezähler"]
+            ["building", "room_id", "capacity", "area", "window_count", "Energiezähler"]
         ].rename(
             columns={
                 "building": "Gebäude",
                 "room_id": "Raum",
-                "full_room_id": "Vollständige ID",
                 "capacity": "Kapazität (Pers.)",
                 "area": "Fläche (m²)",
                 "window_count": "Fenster",

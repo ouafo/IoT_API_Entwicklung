@@ -57,7 +57,7 @@ st.divider()
 
 
 # ---------------------------------------------------------
-# LOAD ROOMS WITH ENERGY METERS
+# LOAD ROOMS WITH ENERGY METERS (ONLY room_id)
 # ---------------------------------------------------------
 
 try:
@@ -71,18 +71,18 @@ if not isinstance(energy_rooms, list) or not energy_rooms:
     st.stop()
 
 rooms_df = pd.DataFrame(energy_rooms)
-room_options = rooms_df["full_room_id"].tolist()
+rooms_df["room_id"] = rooms_df["room_id"].astype(str)
+rooms_df = rooms_df.drop_duplicates(subset=["room_id"], keep="first")
 
 col_r, col_n = st.columns([2, 1])
 
 with col_r:
-    selected_full_room = st.selectbox(
+    selected_room = st.selectbox(
         "Raum mit Energiezähler auswählen",
-        options=room_options,
+        options=rooms_df["room_id"].tolist(),
     )
 
-room_info = rooms_df[rooms_df["full_room_id"] == selected_full_room].iloc[0].to_dict()
-raw_room_id = room_info.get("room_id", selected_full_room)
+room_info = rooms_df[rooms_df["room_id"] == selected_room].iloc[0].to_dict()
 
 capacity = int(room_info.get("capacity", 40))
 area = float(room_info.get("area", 100.0))
@@ -103,7 +103,7 @@ with col_n:
 
 time_range_text = ""
 try:
-    bounds = api.get_room_time_range(raw_room_id, sensor_type="energy_import")
+    bounds = api.get_room_time_range(selected_room, sensor_type="energy_import")
     if bounds.get("StartDateTime") and bounds.get("EndDateTime"):
         time_range_text = (
             f" · Verfügbare Energiedaten: `{bounds.get('StartDateTime')}` bis `{bounds.get('EndDateTime')}`"
@@ -112,7 +112,7 @@ except RuntimeError:
     pass
 
 st.info(
-    f"**Feste Raumattribute ({selected_full_room}):** "
+    f"**Feste Raumattribute ({selected_room}):** "
     f"Kapazität **{capacity} Personen** · "
     f"Fläche **{area:.0f} m²** · "
     f"Fenster **{window_count}**"
@@ -126,11 +126,11 @@ st.info(
 
 try:
     payload = api.get_energy_forecasts(
-        room_id=selected_full_room,
+        room_id=selected_room,
         limit=sample_count,
     )
 except RuntimeError as exc:
-    st.info(f"Für {selected_full_room} stehen aktuell nicht genügend Energiezähler-Daten bereit ({exc}).")
+    st.info(f"Für {selected_room} stehen aktuell nicht genügend Energiezähler-Daten bereit ({exc}).")
     st.stop()
 
 history_df = pd.DataFrame(payload.get("history", []))
@@ -138,7 +138,7 @@ forecast_df = pd.DataFrame(payload.get("forecast", []))
 
 if history_df.empty or forecast_df.empty:
     st.warning(
-        f"Für {selected_full_room} liegen aktuell keine ausreichenden "
+        f"Für {selected_room} liegen aktuell keine ausreichenden "
         "Energiedaten vor."
     )
     st.stop()
@@ -233,7 +233,7 @@ fig_overlay.add_trace(
 )
 
 fig_overlay.update_layout(
-    title=f"Energieverbrauch – Überlagerter Verlauf ({selected_full_room})",
+    title=f"Energieverbrauch – Überlagerter Verlauf ({selected_room})",
     xaxis_title="Messzeitpunkt (Ausgangsreihe) ↔ Korrespondierender Zeitpunkt (+7 Tage)",
     yaxis_title=f"Verbrauch ({unit})",
     hovermode="x unified",
