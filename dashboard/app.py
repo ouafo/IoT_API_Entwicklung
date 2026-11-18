@@ -71,7 +71,7 @@ def build_mini_comparison_chart(
     hist_color: str,
     fc_color: str,
 ) -> go.Figure | None:
-    """Create a compact overlaid Ist vs. +7-day Forecast chart with full dates."""
+    """Kompakter Evolutionsvergleich (Ist vs. +7 Tage) mit Tag, Monat und Jahr."""
     if not history_list or not forecast_list:
         return None
 

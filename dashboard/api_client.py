@@ -1,4 +1,4 @@
-"""Central HTTP client for the KICaGEM FastAPI backend."""
+"""Zentraler HTTP-Client für das KICaGEM FastAPI-Backend."""
 
 from typing import Any, Optional
 
@@ -85,7 +85,7 @@ class APIClient:
             ) from exc
 
     # ---------------------------------------------------------
-    # SYSTEM & ROOM METADATA
+    # SYSTEM & RAUM-METADATEN
     # ---------------------------------------------------------
 
     def health_check(self):
@@ -106,7 +106,7 @@ class APIClient:
         return self.get(f"/api/Rooms('{room_id}')/TimeRange", params=params)
 
     # ---------------------------------------------------------
-    # HISTORICAL ROOM & WEATHER MEASUREMENTS
+    # HISTORISCHE RAUM- & WETTERMESSWERTE
     # ---------------------------------------------------------
 
     def get_room_measurements(
@@ -156,7 +156,7 @@ class APIClient:
         )
 
     # ---------------------------------------------------------
-    # 7-DAY-AHEAD FORECASTS (HISTORY VS. FORECAST SERIES)
+    # 7-TAGE-WOCHENPROGNOSEN (IST-VERLAUF VS. PROGNOSE)
     # ---------------------------------------------------------
 
     def get_rooms_with_forecasts(self):
