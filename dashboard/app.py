@@ -71,7 +71,7 @@ def build_mini_comparison_chart(
     hist_color: str,
     fc_color: str,
 ) -> go.Figure | None:
-    """Create a compact overlaid Ist vs. +7-day Forecast chart."""
+    """Create a compact overlaid Ist vs. +7-day Forecast chart with full dates."""
     if not history_list or not forecast_list:
         return None
 
@@ -81,8 +81,8 @@ def build_mini_comparison_chart(
     h_df["timestamp"] = pd.to_datetime(h_df["timestamp"], utc=True)
     f_df["timestamp"] = pd.to_datetime(f_df["timestamp"], utc=True)
 
-    labels = h_df["timestamp"].dt.strftime("%H:%M")
-    target_labels = f_df["timestamp"].dt.strftime("%d.%m. %H:%M")
+    labels = h_df["timestamp"].dt.strftime("%d.%m.%Y %H:%M")
+    target_labels = f_df["timestamp"].dt.strftime("%d.%m.%Y %H:%M")
 
     fig = go.Figure()
     fig.add_trace(
@@ -111,11 +111,12 @@ def build_mini_comparison_chart(
 
     fig.update_layout(
         title={"text": title, "font": {"size": 15}},
-        xaxis_title="Uhrzeit",
+        xaxis_title="Datum & Uhrzeit",
+        xaxis_tickangle=-30,
         yaxis_title=unit,
         hovermode="x unified",
-        height=280,
-        margin={"l": 10, "r": 10, "t": 42, "b": 10},
+        height=310,
+        margin={"l": 10, "r": 10, "t": 45, "b": 10},
         legend={
             "orientation": "h",
             "yanchor": "bottom",

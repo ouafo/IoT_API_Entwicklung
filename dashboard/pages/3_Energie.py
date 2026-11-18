@@ -198,8 +198,8 @@ st.divider()
 st.subheader("Direkter Evolutionsvergleich: Ist-Verbrauch vs. Prognose (+7 Tage)")
 
 comparison_df = pd.DataFrame({
-    "Uhrzeit_Ist": history_df["timestamp"].dt.strftime("%d.%m. %H:%M"),
-    "Uhrzeit_Prognose": forecast_df["timestamp"].dt.strftime("%d.%m. %H:%M"),
+    "Datum_Ist": history_df["timestamp"].dt.strftime("%d.%m.%Y %H:%M"),
+    "Datum_Prognose": forecast_df["timestamp"].dt.strftime("%d.%m.%Y %H:%M"),
     "Ist": history_df["value"].values,
     "Prognose": forecast_df["value"].values,
 })
@@ -208,36 +208,37 @@ fig_overlay = go.Figure()
 
 fig_overlay.add_trace(
     go.Scatter(
-        x=comparison_df["Uhrzeit_Ist"],
+        x=comparison_df["Datum_Ist"],
         y=comparison_df["Ist"],
         mode="lines+markers",
         name="Ist-Verbrauch (Ausgangsdaten)",
         line={"width": 3, "color": "#1f77b4"},
         marker={"size": 8},
-        customdata=comparison_df["Uhrzeit_Prognose"],
+        customdata=comparison_df["Datum_Prognose"],
         hovertemplate="Ist (%{x}): %{y:.4f} kWh<br>Zielzeitpunkt (+7d): %{customdata}<extra></extra>",
     )
 )
 
 fig_overlay.add_trace(
     go.Scatter(
-        x=comparison_df["Uhrzeit_Ist"],
+        x=comparison_df["Datum_Ist"],
         y=comparison_df["Prognose"],
         mode="lines+markers",
         name=f"Prognose (+7 Tage / {target_weekday})",
         line={"width": 3, "dash": "dash", "color": "#9467bd"},
         marker={"size": 8, "symbol": "diamond"},
-        customdata=comparison_df["Uhrzeit_Prognose"],
+        customdata=comparison_df["Datum_Prognose"],
         hovertemplate="Prognose (%{customdata}): %{y:.4f} kWh<extra></extra>",
     )
 )
 
 fig_overlay.update_layout(
     title=f"Energieverbrauch – Überlagerter Verlauf ({selected_room})",
-    xaxis_title="Messzeitpunkt (Ausgangsreihe) ↔ Korrespondierender Zeitpunkt (+7 Tage)",
+    xaxis_title="Datum & Uhrzeit (Ausgangsreihe) ↔ Korrespondierender Zeitpunkt (+7 Tage)",
+    xaxis_tickangle=-30,
     yaxis_title=f"Verbrauch ({unit})",
     hovermode="x unified",
-    height=460,
+    height=480,
     margin={"l": 20, "r": 20, "t": 60, "b": 20},
 )
 
@@ -258,6 +259,7 @@ fig_timeline.add_trace(
         y=history_df["value"],
         name="Ist-Verbrauch",
         marker_color="#1f77b4",
+        hovertemplate="%{x|%d.%m.%Y %H:%M}: %{y:.4f} " + unit + "<extra>Ist</extra>",
     )
 )
 
@@ -267,14 +269,16 @@ fig_timeline.add_trace(
         y=forecast_df["value"],
         name="Prognose (+7 Tage)",
         marker_color="#9467bd",
+        hovertemplate="%{x|%d.%m.%Y %H:%M}: %{y:.4f} " + unit + "<extra>Prognose</extra>",
     )
 )
 
 fig_timeline.update_layout(
-    xaxis_title="Zeitpunkt (UTC)",
+    xaxis_title="Datum & Uhrzeit (UTC)",
+    xaxis_tickformat="%d.%m.%Y %H:%M",
     yaxis_title=f"Verbrauch ({unit})",
     hovermode="x unified",
-    height=360,
+    height=380,
     margin={"l": 20, "r": 20, "t": 30, "b": 20},
 )
 
@@ -289,9 +293,9 @@ st.divider()
 st.subheader("Tabellarische Gegenüberstellung")
 
 table_df = pd.DataFrame({
-    "Zeitpunkt (Ist)": history_df["timestamp"].dt.strftime("%Y-%m-%d %H:%M"),
+    "Zeitpunkt (Ist)": history_df["timestamp"].dt.strftime("%d.%m.%Y %H:%M"),
     f"Ist-Verbrauch ({unit})": history_df["value"].round(4),
-    "Zeitpunkt (+7 Tage)": forecast_df["timestamp"].dt.strftime("%Y-%m-%d %H:%M"),
+    "Zeitpunkt (+7 Tage)": forecast_df["timestamp"].dt.strftime("%d.%m.%Y %H:%M"),
     f"Prognose ({unit})": forecast_df["value"].round(4),
     f"Differenz ({unit})": (forecast_df["value"] - history_df["value"]).round(4),
 })

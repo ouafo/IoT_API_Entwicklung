@@ -237,8 +237,8 @@ st.divider()
 st.subheader("Direkter Evolutionsvergleich: Ist-Verlauf vs. Prognose (+7 Tage)")
 
 comparison_df = pd.DataFrame({
-    "Uhrzeit_Ist": history_df["timestamp"].dt.strftime("%d.%m. %H:%M"),
-    "Uhrzeit_Prognose": forecast_df["timestamp"].dt.strftime("%d.%m. %H:%M"),
+    "Datum_Ist": history_df["timestamp"].dt.strftime("%d.%m.%Y %H:%M"),
+    "Datum_Prognose": forecast_df["timestamp"].dt.strftime("%d.%m.%Y %H:%M"),
     "Ist": history_df["value"].values,
     "Prognose": forecast_df["value"].values,
 })
@@ -247,36 +247,37 @@ fig_overlay = go.Figure()
 
 fig_overlay.add_trace(
     go.Scatter(
-        x=comparison_df["Uhrzeit_Ist"],
+        x=comparison_df["Datum_Ist"],
         y=comparison_df["Ist"],
         mode="lines+markers",
         name=f"Ist-Verlauf ({sensor_label})",
         line={"width": 3, "color": "#2ca02c"},
         marker={"size": 8},
-        customdata=comparison_df["Uhrzeit_Prognose"],
+        customdata=comparison_df["Datum_Prognose"],
         hovertemplate="Ist (%{x}): %{y:.2f} " + sensor_unit + "<br>Zielzeitpunkt (+7d): %{customdata}<extra></extra>",
     )
 )
 
 fig_overlay.add_trace(
     go.Scatter(
-        x=comparison_df["Uhrzeit_Ist"],
+        x=comparison_df["Datum_Ist"],
         y=comparison_df["Prognose"],
         mode="lines+markers",
         name=f"Prognose (+7 Tage / {target_weekday})",
         line={"width": 3, "dash": "dash", "color": "#d62728"},
         marker={"size": 8, "symbol": "diamond"},
-        customdata=comparison_df["Uhrzeit_Prognose"],
+        customdata=comparison_df["Datum_Prognose"],
         hovertemplate="Prognose (%{customdata}): %{y:.2f} " + sensor_unit + "<extra></extra>",
     )
 )
 
 fig_overlay.update_layout(
     title=f"{sensor_label} – Überlagerter Verlauf ({selected_room})",
-    xaxis_title="Messzeitpunkt (Ausgangsreihe) ↔ Korrespondierender Zeitpunkt (+7 Tage)",
+    xaxis_title="Datum & Uhrzeit (Ausgangsreihe) ↔ Korrespondierender Zeitpunkt (+7 Tage)",
+    xaxis_tickangle=-30,
     yaxis_title=f"{sensor_label} ({sensor_unit})",
     hovermode="x unified",
-    height=460,
+    height=480,
     margin={"l": 20, "r": 20, "t": 60, "b": 20},
 )
 
@@ -298,6 +299,7 @@ fig_timeline.add_trace(
         mode="lines+markers",
         name="Ist-Verlauf",
         line={"width": 2.5, "color": "#2ca02c"},
+        hovertemplate="%{x|%d.%m.%Y %H:%M}: %{y:.2f} " + sensor_unit + "<extra>Ist</extra>",
     )
 )
 
@@ -308,14 +310,16 @@ fig_timeline.add_trace(
         mode="lines+markers",
         name="Prognose (+7 Tage)",
         line={"width": 2.5, "dash": "dash", "color": "#d62728"},
+        hovertemplate="%{x|%d.%m.%Y %H:%M}: %{y:.2f} " + sensor_unit + "<extra>Prognose</extra>",
     )
 )
 
 fig_timeline.update_layout(
-    xaxis_title="Zeitpunkt (UTC)",
+    xaxis_title="Datum & Uhrzeit (UTC)",
+    xaxis_tickformat="%d.%m.%Y %H:%M",
     yaxis_title=f"{sensor_label} ({sensor_unit})",
     hovermode="x unified",
-    height=360,
+    height=380,
     margin={"l": 20, "r": 20, "t": 30, "b": 20},
 )
 
@@ -330,9 +334,9 @@ st.divider()
 st.subheader("Tabellarische Gegenüberstellung")
 
 table_df = pd.DataFrame({
-    "Zeitpunkt (Ist)": history_df["timestamp"].dt.strftime("%Y-%m-%d %H:%M"),
+    "Zeitpunkt (Ist)": history_df["timestamp"].dt.strftime("%d.%m.%Y %H:%M"),
     f"Ist-Wert ({sensor_unit})": history_df["value"].round(2),
-    "Zeitpunkt (+7 Tage)": forecast_df["timestamp"].dt.strftime("%Y-%m-%d %H:%M"),
+    "Zeitpunkt (+7 Tage)": forecast_df["timestamp"].dt.strftime("%d.%m.%Y %H:%M"),
     f"Prognose ({sensor_unit})": forecast_df["value"].round(2),
     f"Differenz ({sensor_unit})": (forecast_df["value"] - history_df["value"]).round(2),
 })
