@@ -33,12 +33,15 @@ class RoomTimeRange(BaseModel):
     EndDateTime: str
 
 
+RoomModel = Room
+
+
 class MeasurementResponse(BaseModel):
     odata_context: str = Field(..., alias="@odata.context")
     odata_count: Optional[int] = Field(None, alias="@odata.count")
     odata_nextLink: Optional[str] = Field(None, alias="@odata.nextLink")
 
-    Room: Optional[Room] = None
+    Room: Optional[RoomModel] = Field(default=None)
     value: List[Measurement]
 
     class Config:
