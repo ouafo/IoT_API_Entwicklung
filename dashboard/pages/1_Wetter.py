@@ -1,5 +1,3 @@
-from datetime import datetime, timedelta, timezone
-
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -10,7 +8,7 @@ from api_client import api
 st.set_page_config(
     page_title="Wetterprognosen | KICaGEM",
     page_icon="🌤️",
-    layout="wide"
+    layout="wide",
 )
 
 
@@ -32,32 +30,20 @@ UNIT_LABELS = {
     "rainfall": "mm",
 }
 
-
-def to_dataframe(payload):
-    if isinstance(payload, dict):
-        records = payload.get("value", [])
-    elif isinstance(payload, list):
-        records = payload
-    else:
-        records = []
-
-    return pd.DataFrame(records)
-
-
-def utc_range(days=7):
-    end = datetime.now(timezone.utc)
-    start = end - timedelta(days=days)
-
-    return (
-        start.isoformat(timespec="seconds"),
-        end.isoformat(timespec="seconds")
-    )
+WEEKDAY_DE = {
+    "Monday": "Montag",
+    "Tuesday": "Dienstag",
+    "Wednesday": "Mittwoch",
+    "Thursday": "Donnerstag",
+    "Friday": "Freitag",
+    "Saturday": "Samstag",
+    "Sunday": "Sonntag",
+}
 
 
 def format_value(value, unit):
-    if pd.isna(value):
+    if value is None or pd.isna(value):
         return "–"
-
     return f"{float(value):.2f} {unit}"
 
 
@@ -67,7 +53,7 @@ def format_value(value, unit):
 
 with st.sidebar:
     st.title("🏢 KICaGEM")
-    st.caption("Wetterprognosen")
+    st.caption("Wetterprognosen (+7 Tage)")
 
     st.divider()
 
@@ -85,183 +71,96 @@ with st.sidebar:
 # HEADER
 # ---------------------------------------------------------
 
-st.title("🌤️ Wetterprognosen")
-
+st.title("🌤️ Wetterprognosen (Wochenvorschau)")
 st.markdown(
-    "Analyse der Wetterprognosen für die verfügbaren Gebäude "
-    "und Wetterstationen."
+    "Vergleich der letzten historischen Messwerte aus der Datenbank mit dem "
+    "**prognostizierten Verlauf in genau 7 Tagen** (gleicher Wochentag)."
 )
-
 st.divider()
 
 
 # ---------------------------------------------------------
-# WEATHER STATIONS
+# WEATHER STATIONS & FILTERS
 # ---------------------------------------------------------
 
 try:
     stations = api.get_weather_stations()
-
 except RuntimeError as exc:
     st.error(f"Wetterstationen konnten nicht geladen werden: {exc}")
     st.stop()
 
-
 if not isinstance(stations, list) or not stations:
-    st.warning("Aktuell sind keine Wetterprognose-Stationen verfügbar.")
+    st.warning("Aktuell sind keine Wetterstationen verfügbar.")
     st.stop()
-
 
 station_ids = [
-    station["BuildingID"]
-    for station in stations
-    if isinstance(station, dict) and station.get("BuildingID")
+    s["BuildingID"] for s in stations
+    if isinstance(s, dict) and s.get("BuildingID")
 ]
 
-if not station_ids:
-    st.warning("Die API hat keine gültigen Gebäude-IDs geliefert.")
-    st.stop()
-
-
-selected_building = st.selectbox(
-    "Gebäude / Wetterstation",
-    options=station_ids
-)
-
-station_info = next(
-    (
-        station for station in stations
-        if station.get("BuildingID") == selected_building
-    ),
-    {}
-)
-
-
-# ---------------------------------------------------------
-# FORECAST DATA
-# ---------------------------------------------------------
-
-try:
-    forecast_payload = api.get_latest_weather_forecasts(
-        selected_building
-    )
-
-except RuntimeError as exc:
-    st.error(f"Wetterprognosen konnten nicht geladen werden: {exc}")
-    st.stop()
-
-
-forecast_df = to_dataframe(forecast_payload)
-
-if forecast_df.empty:
-    st.warning(
-        f"Für Gebäude {selected_building} sind keine Prognosen vorhanden."
-    )
-    st.stop()
-
-
-required_columns = {
-    "SensorTypeCode",
-    "ForecastDateTime",
-    "ForecastOrigin",
-    "HorizonMinutes",
-    "PredictedValue",
-}
-
-missing_columns = required_columns - set(forecast_df.columns)
-
-if missing_columns:
-    st.error(
-        "Die API-Antwort enthält nicht alle erwarteten Felder: "
-        + ", ".join(sorted(missing_columns))
-    )
-    st.stop()
-
-
-forecast_df["ForecastDateTime"] = pd.to_datetime(
-    forecast_df["ForecastDateTime"],
-    utc=True,
-    errors="coerce"
-)
-
-forecast_df["ForecastOrigin"] = pd.to_datetime(
-    forecast_df["ForecastOrigin"],
-    utc=True,
-    errors="coerce"
-)
-
-forecast_df["PredictedValue"] = pd.to_numeric(
-    forecast_df["PredictedValue"],
-    errors="coerce"
-)
-
-forecast_df["HorizonMinutes"] = pd.to_numeric(
-    forecast_df["HorizonMinutes"],
-    errors="coerce"
-)
-
-forecast_df = forecast_df.dropna(
-    subset=["ForecastDateTime", "PredictedValue"]
-)
-
-
-# ---------------------------------------------------------
-# FILTER
-# ---------------------------------------------------------
-
-available_sensors = [
-    sensor for sensor in SENSOR_LABELS
-    if sensor in forecast_df["SensorTypeCode"].unique()
-]
-
-if not available_sensors:
-    st.warning("Keine bekannten Wetter-Sensortypen vorhanden.")
-    st.stop()
-
-
-col1, col2 = st.columns(2)
+col1, col2, col3 = st.columns(3)
 
 with col1:
+    selected_station = st.selectbox(
+        "Wetterstation",
+        options=station_ids,
+    )
+
+station_info = next(
+    (s for s in stations if s.get("BuildingID") == selected_station),
+    {},
+)
+available_sensors = [
+    s for s in SENSOR_LABELS
+    if s in station_info.get("AvailableSensors", list(SENSOR_LABELS.keys()))
+]
+
+with col2:
     selected_sensor = st.selectbox(
         "Messgröße",
         options=available_sensors,
-        format_func=lambda value: SENSOR_LABELS[value]
+        format_func=lambda val: SENSOR_LABELS.get(val, val),
     )
 
-with col2:
-    available_horizons = sorted(
-        forecast_df.loc[
-            forecast_df["SensorTypeCode"] == selected_sensor,
-            "HorizonMinutes"
-        ].dropna().astype(int).unique().tolist()
-    )
-
-    selected_horizon = st.selectbox(
-        "Prognosehorizont",
-        options=available_horizons,
-        format_func=lambda value: f"{value} Minuten"
+with col3:
+    sample_count = st.slider(
+        "Anzahl historischer Datensätze (N)",
+        min_value=10,
+        max_value=30,
+        value=15,
     )
 
 
-filtered_forecasts = forecast_df[
-    (forecast_df["SensorTypeCode"] == selected_sensor)
-    & (forecast_df["HorizonMinutes"] == selected_horizon)
-].copy()
+# ---------------------------------------------------------
+# LOAD FORECAST + PAIRED HISTORY
+# ---------------------------------------------------------
 
-filtered_forecasts = filtered_forecasts.sort_values(
-    "ForecastDateTime"
-)
-
-if filtered_forecasts.empty:
-    st.warning("Für diese Auswahl liegen keine Prognosen vor.")
+try:
+    payload = api.get_weather_forecasts(
+        building_id=selected_station,
+        sensor_type=selected_sensor,
+        limit=sample_count,
+    )
+except RuntimeError as exc:
+    st.error(f"Wetterprognose konnte nicht geladen werden: {exc}")
     st.stop()
 
+history_df = pd.DataFrame(payload.get("History", []))
+forecast_df = pd.DataFrame(payload.get("Forecast", []))
 
-latest_forecast = filtered_forecasts.iloc[-1]
+if history_df.empty or forecast_df.empty:
+    st.warning(
+        f"Für Station {selected_station} ({SENSOR_LABELS[selected_sensor]}) "
+        "liegen aktuell keine ausreichenden Messwerte vor."
+    )
+    st.stop()
 
-unit = latest_forecast.get("MeasureUnitCode")
-if not unit:
-    unit = UNIT_LABELS.get(selected_sensor, "")
+history_df["timestamp"] = pd.to_datetime(history_df["timestamp"], utc=True)
+forecast_df["timestamp"] = pd.to_datetime(forecast_df["timestamp"], utc=True)
+
+unit = payload.get("MeasureUnitCode") or UNIT_LABELS.get(selected_sensor, "")
+target_weekday_en = payload.get("TargetWeekday") or ""
+target_weekday = WEEKDAY_DE.get(target_weekday_en, target_weekday_en)
 
 
 # ---------------------------------------------------------
@@ -269,171 +168,148 @@ if not unit:
 # ---------------------------------------------------------
 
 st.divider()
-st.subheader("Aktuelle Prognose")
+st.subheader(f"Kennzahlen – {SENSOR_LABELS[selected_sensor]} ({target_weekday} nächste Woche)")
+
+hist_avg = history_df["value"].mean()
+fc_avg = forecast_df["value"].mean()
+delta_avg = fc_avg - hist_avg
 
 col1, col2, col3, col4 = st.columns(4)
 
 with col1:
     st.metric(
-        "Prognostizierter Wert",
-        format_value(latest_forecast["PredictedValue"], unit)
+        f"Ø Ist-Verlauf (letzte {len(history_df)})",
+        format_value(hist_avg, unit),
     )
 
 with col2:
     st.metric(
-        "Prognosehorizont",
-        f"{selected_horizon} Minuten"
+        f"Ø Prognose ({target_weekday} +7d)",
+        format_value(fc_avg, unit),
+        delta=f"{delta_avg:+.2f} {unit}",
     )
 
 with col3:
     st.metric(
-        "Datenalter",
-        f'{float(latest_forecast.get("DataAgeHours", 0)):.2f} h'
+        "Prognose Spanne (Min / Max)",
+        f"{forecast_df['value'].min():.2f} – {forecast_df['value'].max():.2f} {unit}",
     )
 
 with col4:
-    is_stale = bool(latest_forecast.get("IsStale", False))
-
     st.metric(
-        "Datenstatus",
-        "Veraltet" if is_stale else "Aktuell"
+        "Ausgewertete Datenbasis",
+        f"{len(history_df)} Datensätze",
     )
-
-
-if is_stale:
-    st.warning(
-        "Die Prognose basiert auf veralteten Eingangsdaten. "
-        "Bitte beachte das Datenalter bei der Interpretation."
-    )
-else:
-    st.success("Die Prognose ist laut API nicht als veraltet markiert.")
 
 
 # ---------------------------------------------------------
-# ACTUAL MEASUREMENTS
+# CHART 1: OVERLAID EVOLUTION (IST VS. PROGNOSE +7 TAGE)
 # ---------------------------------------------------------
 
 st.divider()
-st.subheader("Messwerte und Prognoseverlauf")
+st.subheader("Direkter Evolutionsvergleich: Ist-Verlauf vs. Prognose (+7 Tage)")
 
-start_datetime, end_datetime = utc_range(days=7)
+comparison_df = pd.DataFrame({
+    "Uhrzeit_Ist": history_df["timestamp"].dt.strftime("%d.%m. %H:%M"),
+    "Uhrzeit_Prognose": forecast_df["timestamp"].dt.strftime("%d.%m. %H:%M"),
+    "Ist": history_df["value"].values,
+    "Prognose": forecast_df["value"].values,
+})
 
-try:
-    measurements_payload = api.get_weather_measurements(
-        building_id=selected_building,
-        start_datetime=start_datetime,
-        end_datetime=end_datetime,
-        sensor_type=selected_sensor
-    )
+fig_overlay = go.Figure()
 
-    measurements_df = to_dataframe(measurements_payload)
-
-except RuntimeError as exc:
-    measurements_df = pd.DataFrame()
-    st.warning(f"Historische Messwerte konnten nicht geladen werden: {exc}")
-
-
-fig = go.Figure()
-
-if not measurements_df.empty:
-    measurements_df["StartDateTime"] = pd.to_datetime(
-        measurements_df["StartDateTime"],
-        utc=True,
-        errors="coerce"
-    )
-
-    measurements_df["MeasureContent"] = pd.to_numeric(
-        measurements_df["MeasureContent"],
-        errors="coerce"
-    )
-
-    measurements_df = measurements_df.dropna(
-        subset=["StartDateTime", "MeasureContent"]
-    )
-
-    if not measurements_df.empty:
-        fig.add_trace(
-            go.Scatter(
-                x=measurements_df["StartDateTime"],
-                y=measurements_df["MeasureContent"],
-                mode="lines",
-                name="Historische Messwerte",
-                line={"width": 2}
-            )
-        )
-
-
-fig.add_trace(
+fig_overlay.add_trace(
     go.Scatter(
-        x=filtered_forecasts["ForecastDateTime"],
-        y=filtered_forecasts["PredictedValue"],
+        x=comparison_df["Uhrzeit_Ist"],
+        y=comparison_df["Ist"],
         mode="lines+markers",
-        name="Prognose",
-        line={"width": 3, "dash": "dash"},
-        marker={"size": 9}
+        name="Ist-Verlauf (Ausgangsdaten)",
+        line={"width": 3, "color": "#1f77b4"},
+        marker={"size": 8},
+        customdata=comparison_df["Uhrzeit_Prognose"],
+        hovertemplate="Ist (%{x}): %{y:.2f} " + unit + "<br>Zielzeitpunkt (+7d): %{customdata}<extra></extra>",
     )
 )
 
-fig.update_layout(
-    title=(
-        f"{SENSOR_LABELS[selected_sensor]} – "
-        f"Gebäude {selected_building}"
-    ),
-    xaxis_title="Zeitpunkt",
-    yaxis_title=f"Wert ({unit})" if unit else "Wert",
+fig_overlay.add_trace(
+    go.Scatter(
+        x=comparison_df["Uhrzeit_Ist"],
+        y=comparison_df["Prognose"],
+        mode="lines+markers",
+        name=f"Prognose (+7 Tage / {target_weekday})",
+        line={"width": 3, "dash": "dash", "color": "#ff7f0e"},
+        marker={"size": 8, "symbol": "diamond"},
+        customdata=comparison_df["Uhrzeit_Prognose"],
+        hovertemplate="Prognose (%{customdata}): %{y:.2f} " + unit + "<extra></extra>",
+    )
+)
+
+fig_overlay.update_layout(
+    title=f"{SENSOR_LABELS[selected_sensor]} – Überlagerter Verlauf (Station {selected_station})",
+    xaxis_title="Messzeitpunkt (Ausgangsreihe) ↔ Korrespondierender Zeitpunkt (+7 Tage)",
+    yaxis_title=f"{SENSOR_LABELS[selected_sensor]} ({unit})",
     hovermode="x unified",
-    legend_title="Datenreihe",
-    height=480,
-    margin={"l": 20, "r": 20, "t": 60, "b": 20}
+    height=460,
+    margin={"l": 20, "r": 20, "t": 60, "b": 20},
 )
 
-st.plotly_chart(fig, use_container_width=True)
-
-
-if measurements_df.empty:
-    st.info(
-        "Für den ausgewählten Zeitraum wurden keine historischen "
-        "Messwerte zurückgegeben. Die Prognose wird trotzdem angezeigt."
-    )
+st.plotly_chart(fig_overlay, use_container_width=True)
 
 
 # ---------------------------------------------------------
-# FORECAST TABLE
+# CHART 2: CHRONOLOGICAL TIMELINE
+# ---------------------------------------------------------
+
+st.subheader("Chronologischer Zeitstrahl (Ist → +7 Tage)")
+
+fig_timeline = go.Figure()
+
+fig_timeline.add_trace(
+    go.Scatter(
+        x=history_df["timestamp"],
+        y=history_df["value"],
+        mode="lines+markers",
+        name="Ist-Verlauf",
+        line={"width": 2.5, "color": "#1f77b4"},
+    )
+)
+
+fig_timeline.add_trace(
+    go.Scatter(
+        x=forecast_df["timestamp"],
+        y=forecast_df["value"],
+        mode="lines+markers",
+        name="Prognose (+7 Tage)",
+        line={"width": 2.5, "dash": "dash", "color": "#ff7f0e"},
+    )
+)
+
+fig_timeline.update_layout(
+    xaxis_title="Zeitpunkt (UTC)",
+    yaxis_title=f"{SENSOR_LABELS[selected_sensor]} ({unit})",
+    hovermode="x unified",
+    height=360,
+    margin={"l": 20, "r": 20, "t": 30, "b": 20},
+)
+
+st.plotly_chart(fig_timeline, use_container_width=True)
+
+
+# ---------------------------------------------------------
+# COMPARISON TABLE
 # ---------------------------------------------------------
 
 st.divider()
-st.subheader("Verfügbare Wetterprognosen")
+st.subheader("Tabellarische Gegenüberstellung")
 
-display_columns = [
-    "SensorTypeCode",
-    "ForecastOrigin",
-    "ForecastDateTime",
-    "HorizonMinutes",
-    "PredictedValue",
-    "MeasureUnitCode",
-    "DataAgeHours",
-    "IsStale",
-]
+table_df = pd.DataFrame({
+    "Zeitpunkt (Ist)": history_df["timestamp"].dt.strftime("%Y-%m-%d %H:%M"),
+    f"Ist-Wert ({unit})": history_df["value"].round(2),
+    "Zeitpunkt (+7 Tage)": forecast_df["timestamp"].dt.strftime("%Y-%m-%d %H:%M"),
+    f"Prognose ({unit})": forecast_df["value"].round(2),
+    f"Differenz ({unit})": (forecast_df["value"] - history_df["value"]).round(2),
+})
 
-available_columns = [
-    column for column in display_columns
-    if column in forecast_df.columns
-]
+st.dataframe(table_df, use_container_width=True, hide_index=True)
 
-table_df = forecast_df[available_columns].copy()
-
-table_df["SensorTypeCode"] = table_df["SensorTypeCode"].map(
-    lambda value: SENSOR_LABELS.get(value, value)
-)
-
-st.dataframe(
-    table_df.sort_values(
-        ["SensorTypeCode", "HorizonMinutes"]
-    ),
-    use_container_width=True,
-    hide_index=True
-)
-
-st.caption(
-    "Quelle: KICaGEM Forecast- und WeatherMeasurements-API."
-)
+st.caption("Quelle: KICaGEM On-Demand Weather Forecast API (Read-Only PostgreSQL → +7 Tage).")

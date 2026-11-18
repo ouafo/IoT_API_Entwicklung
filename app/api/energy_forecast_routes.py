@@ -1,18 +1,16 @@
+"""API routes for on-demand 7-day-ahead energy forecasting."""
 
-"""API routes for AI-based energy forecasting."""
-
-from fastapi import APIRouter, Depends, HTTPException, Path
+from typing import Optional
+from fastapi import APIRouter, Depends, HTTPException, Path, Query
 
 from app.auth.basic_auth import verify_basic_auth
 from app.config import settings
-from app.logger import logger
 from app.models.energy_forecast import (
-    EnergyForecastResponse,
+    EnergyForecastSeriesResponse,
     EnergyRoomResponse,
 )
 from app.services.energy_forecast_service import (
     get_energy_rooms,
-    get_latest_energy_forecasts,
     get_room_energy_forecasts,
 )
 
@@ -27,176 +25,43 @@ router = APIRouter(
 @router.get(
     "/Rooms",
     response_model=list[EnergyRoomResponse],
-    summary="List all rooms with energy forecast status",
-    description=(
-        "Lists all known rooms from the available database tables, "
-        "including rooms without generated forecasts. "
-        "Rooms without forecasts are marked with status 'no_forecast'. "
-        "Forecasts based on input data older than 24 hours are marked as stale."
-    ),
+    summary="List all rooms available for energy forecasting",
 )
-def list_energy_rooms():
-    """Return all known rooms and their energy forecast status."""
-
-    try:
-        return get_energy_rooms()
-
-    except FileNotFoundError:
-        raise HTTPException(
-            status_code=503,
-            detail="Energy forecast file is currently unavailable.",
-        )
-
-    except ValueError as exc:
-        logger.error(
-            "Invalid energy forecast data: %s",
-            exc,
-            exc_info=exc,
-        )
-
-        raise HTTPException(
-            status_code=503,
-            detail="Energy forecast data could not be validated.",
-        )
-
-    except Exception as exc:
-        logger.error(
-            "Error retrieving energy rooms: %s",
-            exc,
-            exc_info=exc,
-        )
-
-        raise HTTPException(
-            status_code=500,
-            detail="Energy rooms could not be retrieved.",
-        )
-
-
-@router.get(
-    "/Rooms/{RoomID}/Latest",
-    response_model=list[EnergyForecastResponse],
-    summary="Get latest energy forecasts for a room",
-    description=(
-        "Returns all forecast horizons belonging to the latest "
-        "forecast generation for the selected room. "
-        "The room identifier must include the building ID, "
-        "for example C-C2.005."
-    ),
-)
-def get_latest_room_energy_forecasts(
-    RoomID: str = Path(
-        ...,
-        description="Building and room identifier, e.g. C-C2.005.",
-    ),
-):
-    """Return the latest forecast generation for one room."""
-
-    try:
-        result = get_latest_energy_forecasts(RoomID)
-
-        if not result:
-            raise HTTPException(
-                status_code=404,
-                detail=f"No energy forecasts found for room {RoomID}.",
-            )
-
-        return result
-
-    except HTTPException:
-        raise
-
-    except FileNotFoundError:
-        raise HTTPException(
-            status_code=503,
-            detail="Energy forecast file is currently unavailable.",
-        )
-
-    except ValueError as exc:
-        logger.error(
-            "Invalid energy forecast data for %s",
-            RoomID,
-            exc_info=exc,
-        )
-
-        raise HTTPException(
-            status_code=503,
-            detail="Energy forecast data could not be validated.",
-        )
-
-    except Exception as exc:
-        logger.error(
-            "Error retrieving forecasts for %s: %s",
-            RoomID,
-            exc,
-            exc_info=exc,
-        )
-
-        raise HTTPException(
-            status_code=500,
-            detail="Energy forecasts could not be retrieved.",
-        )
+async def list_energy_rooms():
+    return await get_energy_rooms()
 
 
 @router.get(
     "/Rooms/{RoomID}",
-    response_model=list[EnergyForecastResponse],
-    summary="Get all energy forecasts for a room",
+    response_model=EnergyForecastSeriesResponse,
+    summary="Get 7-day-ahead energy forecast vs. recent history",
     description=(
-        "Returns all generated energy forecasts for the selected room. "
-        "Results are sorted by forecast origin and horizon. "
-        "The room identifier should include the building ID, "
-        "for example C-C2.005."
+        "Uses the last N=15 energy intervals of the room to project "
+        "consumption 7 days ahead (same weekday & time), scaled by "
+        "room capacity and area."
     ),
 )
-def get_room_energy_forecast(
-    RoomID: str = Path(
-        ...,
-        description="Building and room identifier, e.g. C-C2.005.",
-    ),
+async def get_room_energy_forecast(
+    RoomID: str = Path(..., description="Room ID (e.g. C2.005 or C-C2.005)."),
+    limit: int = Query(default=15, ge=5, le=50, description="Number of recent intervals (default 15)."),
+    capacity: Optional[int] = Query(default=None, ge=1, description="Optional room capacity override."),
+    area: Optional[float] = Query(default=None, gt=0, description="Optional room area in m² override."),
+    window_count: Optional[int] = Query(default=None, ge=0, description="Optional window count override."),
 ):
-    """Return all forecasts for one room."""
-
     try:
-        result = get_room_energy_forecasts(RoomID)
-
-        if not result:
-            raise HTTPException(
-                status_code=404,
-                detail=f"No energy forecasts found for room {RoomID}.",
-            )
-
-        return result
-
-    except HTTPException:
-        raise
-
-    except FileNotFoundError:
-        raise HTTPException(
-            status_code=503,
-            detail="Energy forecast file is currently unavailable.",
+        result = await get_room_energy_forecasts(
+            room_id=RoomID,
+            limit=limit,
+            capacity=capacity,
+            area=area,
+            window_count=window_count,
         )
-
     except ValueError as exc:
-        logger.error(
-            "Invalid energy forecast data for %s",
-            RoomID,
-            exc_info=exc,
-        )
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+    if not result["forecast"]:
         raise HTTPException(
-            status_code=503,
-            detail="Energy forecast data could not be validated.",
+            status_code=404,
+            detail=f"Not enough recent energy measurements found for room '{RoomID}'.",
         )
-
-    except Exception as exc:
-        logger.error(
-            "Error retrieving forecasts for %s: %s",
-            RoomID,
-            exc,
-            exc_info=exc,
-        )
-
-        raise HTTPException(
-            status_code=500,
-            detail="Energy forecasts could not be retrieved.",
-        )
+    return result

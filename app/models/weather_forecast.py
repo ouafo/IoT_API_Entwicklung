@@ -1,35 +1,30 @@
-"""Pydantic models for weather forecasts."""
+"""Pydantic response models for weather station forecasting."""
 
 from datetime import datetime
 from typing import Optional
+from pydantic import BaseModel
 
-from pydantic import BaseModel, ConfigDict
 
-
-class WeatherForecastResponse(BaseModel):
-    """A single weather forecast."""
-
-    model_config = ConfigDict(populate_by_name=True)
-
-    BuildingID: str
-    SensorTypeCode: str
-    ForecastOrigin: datetime
-    ForecastDateTime: datetime
-    HorizonMinutes: int
-    PredictedValue: float
-    MeasureUnitCode: Optional[str] = None
-    #ModelType: Optional[str] = None
-    DataAgeHours: float
-    IsStale: bool
-    Status: str
+class WeatherSeriesPoint(BaseModel):
+    timestamp: datetime
+    value: float
 
 
 class WeatherForecastStationResponse(BaseModel):
-    """Forecast availability for one weather station."""
-
     BuildingID: str
+    AvailableSensors: list[str]
+    Status: str = "available"
+
+
+class WeatherForecastSeriesResponse(BaseModel):
+    BuildingID: str
+    SensorTypeCode: str
+    MeasureUnitCode: str
+    ForecastOrigin: Optional[datetime] = None
+    TargetWeekday: Optional[str] = None
+    HorizonDays: int = 7
+    ModelType: str = "DampedTrend(n=15)"
+    HistoryCount: int
     ForecastCount: int
-    LatestForecastOrigin: datetime
-    DataAgeHours: float
-    IsStale: bool
-    Status: str
+    History: list[WeatherSeriesPoint]
+    Forecast: list[WeatherSeriesPoint]

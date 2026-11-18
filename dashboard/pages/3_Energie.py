@@ -8,18 +8,19 @@ from api_client import api
 st.set_page_config(
     page_title="Energieprognosen | KICaGEM",
     page_icon="⚡",
-    layout="wide"
+    layout="wide",
 )
 
 
-def to_dataframe(payload):
-    if isinstance(payload, list):
-        return pd.DataFrame(payload)
-
-    if isinstance(payload, dict):
-        return pd.DataFrame(payload.get("value", []))
-
-    return pd.DataFrame()
+WEEKDAY_DE = {
+    "Monday": "Montag",
+    "Tuesday": "Dienstag",
+    "Wednesday": "Mittwoch",
+    "Thursday": "Donnerstag",
+    "Friday": "Freitag",
+    "Saturday": "Samstag",
+    "Sunday": "Sonntag",
+}
 
 
 # ---------------------------------------------------------
@@ -28,7 +29,7 @@ def to_dataframe(payload):
 
 with st.sidebar:
     st.title("🏢 KICaGEM")
-    st.caption("Energieprognosen")
+    st.caption("Energieprognosen (+7 Tage)")
 
     st.divider()
 
@@ -46,175 +47,108 @@ with st.sidebar:
 # HEADER
 # ---------------------------------------------------------
 
-st.title("⚡ Energieprognosen")
-
+st.title("⚡ Energieprognosen (Wochenvorschau)")
 st.markdown(
-    "Analyse des prognostizierten Energieverbrauchs "
-    "für die verfügbaren Räume."
+    "Berechnet aus den letzten historischen Verbrauchsintervallen des ausgewählten Raums "
+    "den prognostizierten Energieverbrauch in **genau 7 Tagen** (gleicher Wochentag) "
+    "unter Einbezug der festen Raumattribute (**Fläche und Kapazität**)."
 )
-
 st.divider()
 
 
 # ---------------------------------------------------------
-# LOAD ROOMS
+# LOAD ROOMS (ONLY room_id)
 # ---------------------------------------------------------
 
 try:
     energy_rooms = api.get_energy_rooms()
-
 except RuntimeError as exc:
     st.error(f"Energieräume konnten nicht geladen werden: {exc}")
     st.stop()
-
 
 if not isinstance(energy_rooms, list) or not energy_rooms:
     st.warning("Die API hat keine Energieräume zurückgegeben.")
     st.stop()
 
-
 rooms_df = pd.DataFrame(energy_rooms)
-
-if "room_id" not in rooms_df.columns:
-    st.error("Die API-Antwort enthält kein Feld 'room_id'.")
-    st.stop()
-
-
 rooms_df["room_id"] = rooms_df["room_id"].astype(str)
+rooms_df = rooms_df.drop_duplicates(subset=["room_id"], keep="first")
 
-selected_room = st.selectbox(
-    "Raum auswählen",
-    options=rooms_df["room_id"].tolist()
+col_r, col_n = st.columns([2, 1])
+
+with col_r:
+    selected_room = st.selectbox(
+        "Raum auswählen",
+        options=rooms_df["room_id"].tolist(),
+    )
+
+room_info = rooms_df[rooms_df["room_id"] == selected_room].iloc[0].to_dict()
+
+with col_n:
+    sample_count = st.slider(
+        "Anzahl historischer Intervalle (N)",
+        min_value=10,
+        max_value=30,
+        value=15,
+    )
+
+
+# ---------------------------------------------------------
+# READ-ONLY ROOM ATTRIBUTES & AVAILABLE TIMERANGE
+# ---------------------------------------------------------
+
+fixed_capacity = int(room_info.get("capacity", 40))
+fixed_area = float(room_info.get("area", 100.0))
+fixed_windows = int(room_info.get("window_count", 4))
+
+time_range_text = ""
+try:
+    bounds = api.get_room_time_range(selected_room, sensor_type="energy_import")
+    time_range_text = (
+        f" · Verfügbarer Energiedaten-Zeitraum: `{bounds.get('StartDateTime')}` "
+        f"bis `{bounds.get('EndDateTime')}`"
+    )
+except RuntimeError:
+    pass
+
+st.info(
+    f"**Feste Raumattribute für {selected_room}:** "
+    f"Kapazität **{fixed_capacity} Personen** · "
+    f"Fläche **{fixed_area:.0f} m²** · "
+    f"Fenster **{fixed_windows}**"
+    f"{time_range_text}"
 )
 
-room_info = rooms_df[
-    rooms_df["room_id"] == selected_room
-].iloc[0].to_dict()
-
 
 # ---------------------------------------------------------
-# ROOM STATUS
-# ---------------------------------------------------------
-
-status = room_info.get("status", "unbekannt")
-is_stale = bool(room_info.get("is_stale", False))
-
-col1, col2, col3, col4 = st.columns(4)
-
-with col1:
-    st.metric("Raum", selected_room)
-
-with col2:
-    st.metric("Gebäude", room_info.get("building", "–"))
-
-with col3:
-    st.metric("Prognosestatus", status)
-
-with col4:
-    age = room_info.get("data_age_hours")
-
-    st.metric(
-        "Datenalter",
-        f"{float(age):.2f} Stunden" if age is not None else "–"
-    )
-
-
-if status == "no_forecast":
-    st.warning(
-        "Für diesen Raum existieren aktuell keine Energieprognosen."
-    )
-
-    comment = room_info.get("comment")
-    if comment:
-        st.info(comment)
-
-    st.stop()
-
-
-if is_stale:
-    st.warning(
-        "Die Prognose basiert auf veralteten Eingangsdaten."
-    )
-else:
-    st.success("Die Eingangsdaten sind laut API nicht veraltet.")
-
-
-# ---------------------------------------------------------
-# FORECAST DATA
+# LOAD FORECAST + PAIRED HISTORY
 # ---------------------------------------------------------
 
 try:
-    forecast_payload = api.get_latest_energy_forecasts(
-        selected_room
+    payload = api.get_energy_forecasts(
+        room_id=selected_room,
+        limit=sample_count,
     )
-
 except RuntimeError as exc:
-    st.error(f"Energieprognosen konnten nicht geladen werden: {exc}")
+    st.error(f"Energieprognose konnte nicht geladen werden: {exc}")
     st.stop()
 
+history_df = pd.DataFrame(payload.get("history", []))
+forecast_df = pd.DataFrame(payload.get("forecast", []))
 
-forecast_df = to_dataframe(forecast_payload)
-
-if forecast_df.empty:
-    st.warning("Für diesen Raum wurden keine Prognosen zurückgegeben.")
-    st.stop()
-
-
-required_columns = {
-    "building",
-    "room_id",
-    "forecast_origin",
-    "forecast_timestamp",
-    "horizon_minutes",
-    "predicted_consumption_kwh",
-    "model_type",
-}
-
-missing_columns = required_columns - set(forecast_df.columns)
-
-if missing_columns:
-    st.error(
-        "In der Energieprognose fehlen folgende Felder: "
-        + ", ".join(sorted(missing_columns))
+if history_df.empty or forecast_df.empty:
+    st.warning(
+        f"Für {selected_room} liegen aktuell keine ausreichenden "
+        "Energiedaten vor."
     )
     st.stop()
 
+history_df["timestamp"] = pd.to_datetime(history_df["timestamp"], utc=True)
+forecast_df["timestamp"] = pd.to_datetime(forecast_df["timestamp"], utc=True)
 
-forecast_df["forecast_origin"] = pd.to_datetime(
-    forecast_df["forecast_origin"],
-    utc=True,
-    errors="coerce"
-)
-
-forecast_df["forecast_timestamp"] = pd.to_datetime(
-    forecast_df["forecast_timestamp"],
-    utc=True,
-    errors="coerce"
-)
-
-forecast_df["predicted_consumption_kwh"] = pd.to_numeric(
-    forecast_df["predicted_consumption_kwh"],
-    errors="coerce"
-)
-
-forecast_df["horizon_minutes"] = pd.to_numeric(
-    forecast_df["horizon_minutes"],
-    errors="coerce"
-)
-
-forecast_df = forecast_df.dropna(
-    subset=[
-        "forecast_timestamp",
-        "predicted_consumption_kwh"
-    ]
-)
-
-if forecast_df.empty:
-    st.warning("Die Energieprognose enthält keine gültigen Werte.")
-    st.stop()
-
-
-forecast_df = forecast_df.sort_values("forecast_timestamp")
+unit = payload.get("unit", "kWh")
+target_weekday_en = payload.get("target_weekday") or ""
+target_weekday = WEEKDAY_DE.get(target_weekday_en, target_weekday_en)
 
 
 # ---------------------------------------------------------
@@ -222,141 +156,146 @@ forecast_df = forecast_df.sort_values("forecast_timestamp")
 # ---------------------------------------------------------
 
 st.divider()
-st.subheader("Aktuelle Energieprognose")
+st.subheader(f"Kennzahlen – Energieverbrauch ({target_weekday} nächste Woche)")
 
-latest_forecast = forecast_df.iloc[-1]
+hist_sum = history_df["value"].sum()
+fc_sum = forecast_df["value"].sum()
+delta_sum = fc_sum - hist_sum
 
 col1, col2, col3, col4 = st.columns(4)
 
 with col1:
     st.metric(
-        "Prognostizierter Verbrauch",
-        f'{latest_forecast["predicted_consumption_kwh"]:.4f} kWh'
+        f"Gesamtverbrauch (letzte {len(history_df)})",
+        f"{hist_sum:.3f} {unit}",
     )
 
 with col2:
     st.metric(
-        "Prognosehorizont",
-        f'{int(latest_forecast["horizon_minutes"])} Minuten'
+        f"Prognose Gesamt ({target_weekday} +7d)",
+        f"{fc_sum:.3f} {unit}",
+        delta=f"{delta_sum:+.3f} {unit}",
     )
 
 with col3:
     st.metric(
-        "Modell",
-        str(latest_forecast["model_type"])
+        "Ø Verbrauch pro Intervall",
+        f"{forecast_df['value'].mean():.4f} {unit}",
     )
 
 with col4:
     st.metric(
-        "Anzahl Prognosen",
-        len(forecast_df)
+        "Ausgewertete Datenbasis",
+        f"{len(history_df)} Intervalle",
     )
 
 
 # ---------------------------------------------------------
-# FORECAST CHART
+# CHART 1: OVERLAID EVOLUTION (IST VS. PROGNOSE +7 TAGE)
 # ---------------------------------------------------------
 
 st.divider()
-st.subheader("Prognostizierter Energieverbrauch")
+st.subheader("Direkter Evolutionsvergleich: Ist-Verbrauch vs. Prognose (+7 Tage)")
 
-fig = go.Figure()
+comparison_df = pd.DataFrame({
+    "Uhrzeit_Ist": history_df["timestamp"].dt.strftime("%d.%m. %H:%M"),
+    "Uhrzeit_Prognose": forecast_df["timestamp"].dt.strftime("%d.%m. %H:%M"),
+    "Ist": history_df["value"].values,
+    "Prognose": forecast_df["value"].values,
+})
 
-fig.add_trace(
+fig_overlay = go.Figure()
+
+fig_overlay.add_trace(
     go.Scatter(
-        x=forecast_df["forecast_timestamp"],
-        y=forecast_df["predicted_consumption_kwh"],
+        x=comparison_df["Uhrzeit_Ist"],
+        y=comparison_df["Ist"],
         mode="lines+markers",
-        name="Prognostizierter Verbrauch",
-        line={"width": 3},
-        marker={"size": 10}
+        name="Ist-Verbrauch (Ausgangsdaten)",
+        line={"width": 3, "color": "#1f77b4"},
+        marker={"size": 8},
+        customdata=comparison_df["Uhrzeit_Prognose"],
+        hovertemplate="Ist (%{x}): %{y:.4f} kWh<br>Zielzeitpunkt (+7d): %{customdata}<extra></extra>",
     )
 )
 
-fig.update_layout(
-    title=f"Energieprognose – {selected_room}",
-    xaxis_title="Prognosezeitpunkt",
-    yaxis_title="Prognostizierter Verbrauch (kWh)",
+fig_overlay.add_trace(
+    go.Scatter(
+        x=comparison_df["Uhrzeit_Ist"],
+        y=comparison_df["Prognose"],
+        mode="lines+markers",
+        name=f"Prognose (+7 Tage / {target_weekday})",
+        line={"width": 3, "dash": "dash", "color": "#9467bd"},
+        marker={"size": 8, "symbol": "diamond"},
+        customdata=comparison_df["Uhrzeit_Prognose"],
+        hovertemplate="Prognose (%{customdata}): %{y:.4f} kWh<extra></extra>",
+    )
+)
+
+fig_overlay.update_layout(
+    title=f"Energieverbrauch – Überlagerter Verlauf ({selected_room})",
+    xaxis_title="Messzeitpunkt (Ausgangsreihe) ↔ Korrespondierender Zeitpunkt (+7 Tage)",
+    yaxis_title=f"Verbrauch ({unit})",
     hovermode="x unified",
-    height=480,
-    margin={"l": 20, "r": 20, "t": 60, "b": 20}
+    height=460,
+    margin={"l": 20, "r": 20, "t": 60, "b": 20},
 )
 
-st.plotly_chart(fig, use_container_width=True)
+st.plotly_chart(fig_overlay, use_container_width=True)
 
 
 # ---------------------------------------------------------
-# HORIZON COMPARISON
+# CHART 2: CHRONOLOGICAL TIMELINE
 # ---------------------------------------------------------
 
-st.divider()
-st.subheader("Vergleich der Prognosehorizonte")
+st.subheader("Chronologischer Zeitstrahl (Ist → +7 Tage)")
 
-horizon_df = forecast_df[
-    ["horizon_minutes", "predicted_consumption_kwh"]
-].copy()
+fig_timeline = go.Figure()
 
-horizon_df = horizon_df.sort_values("horizon_minutes")
-
-fig_horizon = go.Figure()
-
-fig_horizon.add_trace(
+fig_timeline.add_trace(
     go.Bar(
-        x=horizon_df["horizon_minutes"].astype(str) + " min",
-        y=horizon_df["predicted_consumption_kwh"],
-        text=[
-            f"{value:.4f} kWh"
-            for value in horizon_df["predicted_consumption_kwh"]
-        ],
-        textposition="outside",
-        name="Energieprognose"
+        x=history_df["timestamp"],
+        y=history_df["value"],
+        name="Ist-Verbrauch",
+        marker_color="#1f77b4",
     )
 )
 
-fig_horizon.update_layout(
-    xaxis_title="Prognosehorizont",
-    yaxis_title="Prognostizierter Verbrauch (kWh)",
-    height=380,
-    showlegend=False,
-    margin={"l": 20, "r": 20, "t": 30, "b": 20}
+fig_timeline.add_trace(
+    go.Bar(
+        x=forecast_df["timestamp"],
+        y=forecast_df["value"],
+        name="Prognose (+7 Tage)",
+        marker_color="#9467bd",
+    )
 )
 
-st.plotly_chart(fig_horizon, use_container_width=True)
+fig_timeline.update_layout(
+    xaxis_title="Zeitpunkt (UTC)",
+    yaxis_title=f"Verbrauch ({unit})",
+    hovermode="x unified",
+    height=360,
+    margin={"l": 20, "r": 20, "t": 30, "b": 20},
+)
+
+st.plotly_chart(fig_timeline, use_container_width=True)
 
 
 # ---------------------------------------------------------
-# FORECAST TABLE
+# COMPARISON TABLE
 # ---------------------------------------------------------
 
 st.divider()
-st.subheader("Prognosedetails")
+st.subheader("Tabellarische Gegenüberstellung")
 
-display_columns = [
-    "building",
-    "room_id",
-    "forecast_origin",
-    "forecast_timestamp",
-    "horizon_minutes",
-    "predicted_consumption_kwh",
-    "model_type",
-    "data_age_hours",
-    "is_stale",
-    "status",
-    "comment",
-]
+table_df = pd.DataFrame({
+    "Zeitpunkt (Ist)": history_df["timestamp"].dt.strftime("%Y-%m-%d %H:%M"),
+    f"Ist-Verbrauch ({unit})": history_df["value"].round(4),
+    "Zeitpunkt (+7 Tage)": forecast_df["timestamp"].dt.strftime("%Y-%m-%d %H:%M"),
+    f"Prognose ({unit})": forecast_df["value"].round(4),
+    f"Differenz ({unit})": (forecast_df["value"] - history_df["value"]).round(4),
+})
 
-available_columns = [
-    column for column in display_columns
-    if column in forecast_df.columns
-]
+st.dataframe(table_df, use_container_width=True, hide_index=True)
 
-st.dataframe(
-    forecast_df[available_columns],
-    use_container_width=True,
-    hide_index=True
-)
-
-st.caption(
-    "Quelle: KICaGEM Energy Forecast API. "
-    "Die Prognosewerte werden in kWh ausgewiesen."
-)
+st.caption("Quelle: KICaGEM On-Demand Energy Forecast API (Read-Only PostgreSQL + feste Raumattribute → +7 Tage).")

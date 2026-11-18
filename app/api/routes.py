@@ -30,8 +30,7 @@ from app.exceptions import (
 
 
 router = APIRouter(
-    prefix=settings.API_PREFIX,
-    tags=["Building & Room Management"]
+    prefix=settings.API_PREFIX
 )
 
 
@@ -165,7 +164,7 @@ async def _get_room_by_room_id(room_id: str):
 
 
 # ============================================================
-# Health Check
+# System & Monitoring: GET /health
 # ============================================================
 
 @router.get(
@@ -213,12 +212,80 @@ async def health_check():
 
 
 # ============================================================
-# GET /Rooms
+# API Metadata: GET /$metadata
+# ============================================================
+
+@router.get(
+    "/$metadata",
+    tags=["API Metadata"]
+)
+async def get_metadata(
+    _user: str = Depends(verify_basic_auth)
+):
+    """OData CSDL metadata (Entity Data Model)."""
+    xml = """<?xml version="1.0" encoding="UTF-8"?>
+<edmx:Edmx
+ xmlns:edmx="http://docs.oasis-open.org/odata/ns/edmx"
+ Version="4.0">
+ <edmx:DataServices>
+ <Schema
+ xmlns="http://docs.oasis-open.org/odata/ns/edm"
+ Namespace="KICAGEM">
+
+ <EntityType Name="Room">
+ <Key>
+ <PropertyRef Name="RoomKey"/>
+ </Key>
+ <Property Name="RoomKey" Type="Edm.String" Nullable="false"/>
+ <Property Name="RoomID" Type="Edm.String" Nullable="false"/>
+ <Property Name="BuildingID" Type="Edm.String" Nullable="false"/>
+ <Property Name="ApplicationName" Type="Edm.String"/>
+ <NavigationProperty
+ Name="Measurements"
+ Type="Collection(KICAGEM.Measurement)"/>
+ </EntityType>
+
+ <EntityType Name="Measurement">
+ <Key>
+ <PropertyRef Name="MeasurementID"/>
+ </Key>
+ <Property Name="MeasurementID" Type="Edm.Guid" Nullable="false"/>
+ <Property Name="RoomID" Type="Edm.String" Nullable="false"/>
+ <Property Name="BuildingID" Type="Edm.String" Nullable="false"/>
+ <Property Name="SensorTypeCode" Type="Edm.String" Nullable="false"/>
+ <Property Name="StartDateTime" Type="Edm.DateTimeOffset" Nullable="false"/>
+ <Property Name="EndDateTime" Type="Edm.DateTimeOffset" Nullable="false"/>
+ <Property Name="MeasureContent" Type="Edm.Double" Nullable="false"/>
+ <Property Name="MeasureUnitCode" Type="Edm.String" Nullable="false"/>
+ </EntityType>
+
+ <EntityContainer Name="Container">
+ <EntitySet Name="Rooms" EntityType="KICAGEM.Room">
+ <NavigationPropertyBinding
+ Path="Measurements"
+ Target="Measurements"/>
+ </EntitySet>
+ <EntitySet Name="Measurements" EntityType="KICAGEM.Measurement"/>
+ </EntityContainer>
+
+ </Schema>
+ </edmx:DataServices>
+</edmx:Edmx>"""
+
+    return JSONResponse(
+        content=xml,
+        media_type="application/xml"
+    )
+
+
+# ============================================================
+# Building & Room Management: GET /Rooms
 # ============================================================
 
 @router.get(
     "/Rooms",
-    response_model=RoomResponse
+    response_model=RoomResponse,
+    tags=["Building & Room Management"]
 )
 async def get_rooms(
     filter: Optional[str] = Query(None, alias="$filter"),
@@ -248,10 +315,13 @@ async def get_rooms(
 
 
 # ============================================================
-# GET /Rooms('{RoomID}')
+# Building & Room Management: GET /Rooms('{RoomID}')
 # ============================================================
 
-@router.get("/Rooms('{RoomID}')")
+@router.get(
+    "/Rooms('{RoomID}')",
+    tags=["Building & Room Management"]
+)
 async def get_single_room(
     RoomID: str = Path(
         ...,
@@ -271,12 +341,13 @@ async def get_single_room(
 
 
 # ============================================================
-# GET /Rooms('{RoomID}')/TimeRange
+# Building & Room Management: GET /Rooms('{RoomID}')/TimeRange
 # ============================================================
 
 @router.get(
     "/Rooms('{RoomID}')/TimeRange",
-    response_model=RoomTimeRange
+    response_model=RoomTimeRange,
+    tags=["Building & Room Management"]
 )
 async def get_room_time_range(
     RoomID: str = Path(
@@ -325,12 +396,13 @@ async def get_room_time_range(
 
 
 # ============================================================
-# GET /Rooms('{RoomID}')/Measurements
+# Building & Room Management: GET /Rooms('{RoomID}')/Measurements
 # ============================================================
 
 @router.get(
     "/Rooms('{RoomID}')/Measurements",
-    response_model=MeasurementResponse
+    response_model=MeasurementResponse,
+    tags=["Building & Room Management"]
 )
 async def get_room_measurements(
     RoomID: str = Path(
@@ -543,70 +615,3 @@ async def get_room_measurements(
         )
 
     return response
-
-
-# ============================================================
-# GET /$metadata
-# ============================================================
-
-@router.get(
-    "/$metadata",
-    tags=["API Metadata"]
-)
-async def get_metadata(
-    _user: str = Depends(verify_basic_auth)
-):
-    """OData CSDL metadata (Entity Data Model)."""
-    xml = """<?xml version="1.0" encoding="UTF-8"?>
-<edmx:Edmx
- xmlns:edmx="http://docs.oasis-open.org/odata/ns/edmx"
- Version="4.0">
- <edmx:DataServices>
- <Schema
- xmlns="http://docs.oasis-open.org/odata/ns/edm"
- Namespace="KICAGEM">
-
- <EntityType Name="Room">
- <Key>
- <PropertyRef Name="RoomKey"/>
- </Key>
- <Property Name="RoomKey" Type="Edm.String" Nullable="false"/>
- <Property Name="RoomID" Type="Edm.String" Nullable="false"/>
- <Property Name="BuildingID" Type="Edm.String" Nullable="false"/>
- <Property Name="ApplicationName" Type="Edm.String"/>
- <NavigationProperty
- Name="Measurements"
- Type="Collection(KICAGEM.Measurement)"/>
- </EntityType>
-
- <EntityType Name="Measurement">
- <Key>
- <PropertyRef Name="MeasurementID"/>
- </Key>
- <Property Name="MeasurementID" Type="Edm.Guid" Nullable="false"/>
- <Property Name="RoomID" Type="Edm.String" Nullable="false"/>
- <Property Name="BuildingID" Type="Edm.String" Nullable="false"/>
- <Property Name="SensorTypeCode" Type="Edm.String" Nullable="false"/>
- <Property Name="StartDateTime" Type="Edm.DateTimeOffset" Nullable="false"/>
- <Property Name="EndDateTime" Type="Edm.DateTimeOffset" Nullable="false"/>
- <Property Name="MeasureContent" Type="Edm.Double" Nullable="false"/>
- <Property Name="MeasureUnitCode" Type="Edm.String" Nullable="false"/>
- </EntityType>
-
- <EntityContainer Name="Container">
- <EntitySet Name="Rooms" EntityType="KICAGEM.Room">
- <NavigationPropertyBinding
- Path="Measurements"
- Target="Measurements"/>
- </EntitySet>
- <EntitySet Name="Measurements" EntityType="KICAGEM.Measurement"/>
- </EntityContainer>
-
- </Schema>
- </edmx:DataServices>
-</edmx:Edmx>"""
-
-    return JSONResponse(
-        content=xml,
-        media_type="application/xml"
-    )

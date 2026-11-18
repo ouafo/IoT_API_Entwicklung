@@ -1,6 +1,3 @@
-
-from datetime import datetime, timedelta, timezone
-
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -11,92 +8,48 @@ from api_client import api
 st.set_page_config(
     page_title="Raumklima | KICaGEM",
     page_icon="🌡️",
-    layout="wide"
+    layout="wide",
 )
 
-
-# ---------------------------------------------------------
-# SENSOR CONFIGURATION
-# ---------------------------------------------------------
 
 SENSOR_CONFIG = {
     "temperature": {
         "label": "Temperatur",
         "icon": "🌡️",
         "unit": "°C",
-        "measurement_label": "Gemessene Temperatur",
-        "forecast_label": "Prognostizierte Temperatur",
     },
     "humidity": {
         "label": "Luftfeuchtigkeit",
         "icon": "💧",
         "unit": "%",
-        "measurement_label": "Gemessene Luftfeuchtigkeit",
-        "forecast_label": "Prognostizierte Luftfeuchtigkeit",
     },
     "co2": {
         "label": "CO₂-Konzentration",
         "icon": "🌫️",
         "unit": "ppm",
-        "measurement_label": "Gemessene CO₂-Konzentration",
-        "forecast_label": "Prognostizierte CO₂-Konzentration",
     },
     "light": {
         "label": "Lichtintensität",
         "icon": "💡",
         "unit": "Lux",
-        "measurement_label": "Gemessene Lichtintensität",
-        "forecast_label": "Prognostizierte Lichtintensität",
     },
 }
 
-
-# ---------------------------------------------------------
-# HELPER FUNCTIONS
-# ---------------------------------------------------------
-
-def to_dataframe(payload):
-    if isinstance(payload, dict):
-        return pd.DataFrame(payload.get("value", []))
-
-    if isinstance(payload, list):
-        return pd.DataFrame(payload)
-
-    return pd.DataFrame()
-
-
-def utc_range(days=7):
-    end = datetime.now(timezone.utc)
-    start = end - timedelta(days=days)
-
-    return (
-        start.isoformat(timespec="seconds"),
-        end.isoformat(timespec="seconds")
-    )
+WEEKDAY_DE = {
+    "Monday": "Montag",
+    "Tuesday": "Dienstag",
+    "Wednesday": "Mittwoch",
+    "Thursday": "Donnerstag",
+    "Friday": "Freitag",
+    "Saturday": "Samstag",
+    "Sunday": "Sonntag",
+}
 
 
 def format_value(value, unit):
     if value is None or pd.isna(value):
         return "–"
-
     return f"{float(value):.2f} {unit}"
-
-
-def get_sensor_options(room_info):
-    """
-    Returns sensor types available for the selected room.
-    """
-
-    available_sensors = room_info.get("available_sensors", [])
-
-    if not isinstance(available_sensors, list):
-        available_sensors = []
-
-    return [
-        sensor
-        for sensor in available_sensors
-        if sensor in SENSOR_CONFIG
-    ]
 
 
 # ---------------------------------------------------------
@@ -105,7 +58,7 @@ def get_sensor_options(room_info):
 
 with st.sidebar:
     st.title("🏢 KICaGEM")
-    st.caption("Raumklimaprognosen")
+    st.caption("Raumklimaprognosen (+7 Tage)")
 
     st.divider()
 
@@ -123,488 +76,267 @@ with st.sidebar:
 # HEADER
 # ---------------------------------------------------------
 
-st.title("🌡️ Raumklimaprognosen")
-
+st.title("🌡️ Raumklimaprognosen (Wochenvorschau)")
 st.markdown(
-    """
-    Analyse historischer Raumklimamesswerte und KI-gestützter Prognosen.
-
-    Wähle einen Raum und eine Messgröße aus, um den bisherigen Verlauf
-    und die prognostizierte Entwicklung zu untersuchen.
-    """
+    "Berechnet aus den letzten historischen Datensätzen des ausgewählten Raums "
+    "den erwarteten Verlauf in **genau 7 Tagen** (gleicher Wochentag) unter "
+    "Berücksichtigung der festen Raumattribute (**Kapazität, Fläche und Fensteranzahl**)."
 )
-
 st.divider()
 
 
 # ---------------------------------------------------------
-# LOAD ROOMS
+# LOAD ROOMS (ONLY room_id)
 # ---------------------------------------------------------
 
 try:
     rooms_payload = api.get_rooms_with_forecasts()
-
 except RuntimeError as exc:
     st.error(f"Räume konnten nicht geladen werden: {exc}")
     st.stop()
 
-
 rooms = rooms_payload.get("value", [])
-
 if not rooms:
     st.warning("Die API hat keine Räume zurückgegeben.")
     st.stop()
 
-
 rooms_df = pd.DataFrame(rooms)
-
-if "room_id" not in rooms_df.columns:
-    st.error("Die Raumliste enthält kein Feld 'room_id'.")
-    st.stop()
-
-
 rooms_df["room_id"] = rooms_df["room_id"].astype(str)
+rooms_df = rooms_df.drop_duplicates(subset=["room_id"], keep="first")
 
-available_rooms = rooms_df["room_id"].tolist()
+col_r, col_s, col_n = st.columns(3)
 
-selected_room = st.selectbox(
-    "Raum auswählen",
-    options=available_rooms
-)
-
-selected_room_info = rooms_df[
-    rooms_df["room_id"] == selected_room
-].iloc[0].to_dict()
-
-
-# ---------------------------------------------------------
-# ROOM STATUS
-# ---------------------------------------------------------
-
-status = selected_room_info.get("status", "unbekannt")
-is_stale = bool(selected_room_info.get("is_stale", False))
-
-col1, col2, col3 = st.columns(3)
-
-with col1:
-    st.metric("Raum", selected_room)
-
-with col2:
-    st.metric("Prognosestatus", status)
-
-with col3:
-    age = selected_room_info.get("data_age_hours")
-
-    st.metric(
-        "Datenalter",
-        f"{float(age):.2f} Stunden" if age is not None else "–"
+with col_r:
+    selected_room = st.selectbox(
+        "Raum auswählen",
+        options=rooms_df["room_id"].tolist(),
     )
 
+room_info = rooms_df[rooms_df["room_id"] == selected_room].iloc[0].to_dict()
 
-if status == "no_forecast":
-    st.warning(
-        "Für diesen Raum existieren aktuell keine Prognosedaten."
+with col_s:
+    selected_sensor = st.selectbox(
+        "Messgröße auswählen",
+        options=list(SENSOR_CONFIG.keys()),
+        format_func=lambda s: f"{SENSOR_CONFIG[s]['icon']} {SENSOR_CONFIG[s]['label']}",
     )
 
-    comment = selected_room_info.get("comment")
-
-    if comment:
-        st.info(comment)
-
-    st.stop()
-
-
-if is_stale:
-    st.warning(
-        "Die Eingangsdaten dieser Prognose sind laut API veraltet."
+with col_n:
+    sample_count = st.slider(
+        "Anzahl historischer Datensätze (N)",
+        min_value=10,
+        max_value=30,
+        value=15,
     )
 
 
 # ---------------------------------------------------------
-# SENSOR SELECTION
+# READ-ONLY ROOM ATTRIBUTES & AVAILABLE TIMERANGE
 # ---------------------------------------------------------
 
-available_sensors = get_sensor_options(selected_room_info)
+fixed_capacity = int(room_info.get("capacity", 40))
+fixed_area = float(room_info.get("area", 100.0))
+fixed_windows = int(room_info.get("window_count", 4))
 
-if not available_sensors:
-    st.warning(
-        "Für diesen Raum wurden keine unterstützten Prognose-Sensoren "
-        "zurückgegeben. Bitte prüfe die verfügbaren Sensoren in der API."
+time_range_text = ""
+try:
+    bounds = api.get_room_time_range(selected_room, sensor_type=selected_sensor)
+    time_range_text = (
+        f" · Verfügbarer Datenzeitraum: `{bounds.get('StartDateTime')}` "
+        f"bis `{bounds.get('EndDateTime')}`"
     )
-    st.stop()
+except RuntimeError:
+    pass
 
-
-selected_sensor = st.selectbox(
-    "Messgröße auswählen",
-    options=available_sensors,
-    format_func=lambda sensor: (
-        f"{SENSOR_CONFIG[sensor]['icon']} "
-        f"{SENSOR_CONFIG[sensor]['label']}"
-    )
-)
-
-sensor_config = SENSOR_CONFIG[selected_sensor]
-sensor_label = sensor_config["label"]
-sensor_unit = sensor_config["unit"]
-
-
-st.caption(
-    f"Ausgewählte Messgröße: **{sensor_label}** "
-    f"({selected_sensor})"
+st.info(
+    f"**Feste Raumattribute für {selected_room}:** "
+    f"Kapazität **{fixed_capacity} Personen** · "
+    f"Fläche **{fixed_area:.0f} m²** · "
+    f"Fenster **{fixed_windows}**"
+    f"{time_range_text}"
 )
 
 
 # ---------------------------------------------------------
-# FORECAST DATA
+# LOAD FORECAST + PAIRED HISTORY
 # ---------------------------------------------------------
 
 try:
-    forecast_payload = api.get_room_forecasts(
+    payload = api.get_room_forecasts(
         room_id=selected_room,
-        limit=1000,
-        sensor_type=selected_sensor
+        sensor_type=selected_sensor,
+        limit=sample_count,
     )
-
 except RuntimeError as exc:
-    st.error(f"Raumprognosen konnten nicht geladen werden: {exc}")
+    st.error(f"Raumprognose konnte nicht geladen werden: {exc}")
     st.stop()
 
+history_df = pd.DataFrame(payload.get("history", []))
+forecast_df = pd.DataFrame(payload.get("forecast", []))
 
-forecast_df = to_dataframe(forecast_payload)
-
-if forecast_df.empty:
+if history_df.empty or forecast_df.empty:
     st.warning(
-        f"Für {selected_room} liegen keine Prognosen für "
-        f"{sensor_label} vor."
+        f"Für {selected_room} liegen aktuell keine ausreichenden "
+        f"{SENSOR_CONFIG[selected_sensor]['label']}-Messwerte vor."
     )
     st.stop()
 
+history_df["timestamp"] = pd.to_datetime(history_df["timestamp"], utc=True)
+forecast_df["timestamp"] = pd.to_datetime(forecast_df["timestamp"], utc=True)
 
-# Support for the previous temperature-only response format.
-if (
-    "predicted_value" not in forecast_df.columns
-    and "predicted_temperature_c" in forecast_df.columns
-):
-    forecast_df["predicted_value"] = (
-        forecast_df["predicted_temperature_c"]
-    )
-
-
-required_columns = {
-    "forecast_timestamp",
-    "forecast_origin",
-    "predicted_value",
-    "horizon_minutes",
-}
-
-missing_columns = required_columns - set(forecast_df.columns)
-
-if missing_columns:
-    st.error(
-        "In der Prognoseantwort fehlen folgende Felder: "
-        + ", ".join(sorted(missing_columns))
-    )
-    st.stop()
-
-
-forecast_df["forecast_timestamp"] = pd.to_datetime(
-    forecast_df["forecast_timestamp"],
-    utc=True,
-    errors="coerce"
-)
-
-forecast_df["forecast_origin"] = pd.to_datetime(
-    forecast_df["forecast_origin"],
-    utc=True,
-    errors="coerce"
-)
-
-forecast_df["predicted_value"] = pd.to_numeric(
-    forecast_df["predicted_value"],
-    errors="coerce"
-)
-
-forecast_df["horizon_minutes"] = pd.to_numeric(
-    forecast_df["horizon_minutes"],
-    errors="coerce"
-)
-
-forecast_df = forecast_df.dropna(
-    subset=[
-        "forecast_timestamp",
-        "predicted_value",
-        "horizon_minutes",
-    ]
-)
-
-if forecast_df.empty:
-    st.warning(
-        f"Die Prognose enthält keine gültigen Werte für {sensor_label}."
-    )
-    st.stop()
+sensor_label = SENSOR_CONFIG[selected_sensor]["label"]
+sensor_unit = payload.get("unit") or SENSOR_CONFIG[selected_sensor]["unit"]
+target_weekday_en = payload.get("target_weekday") or ""
+target_weekday = WEEKDAY_DE.get(target_weekday_en, target_weekday_en)
 
 
 # ---------------------------------------------------------
-# SUMMARY
+# KPI CARDS
 # ---------------------------------------------------------
-
-try:
-    summary = api.get_room_forecast_summary(
-        room_id=selected_room,
-        sensor_type=selected_sensor
-    )
-
-except RuntimeError as exc:
-    summary = {}
-    st.warning(f"Prognosekennzahlen konnten nicht geladen werden: {exc}")
-
 
 st.divider()
-st.subheader(f"Prognosekennzahlen – {sensor_label}")
+st.subheader(f"Kennzahlen – {sensor_label} ({target_weekday} nächste Woche)")
+
+hist_avg = history_df["value"].mean()
+fc_avg = forecast_df["value"].mean()
+delta_avg = fc_avg - hist_avg
 
 col1, col2, col3, col4 = st.columns(4)
 
 with col1:
     st.metric(
-        f"Durchschnitt ({sensor_unit})",
-        format_value(
-            summary.get("average_value"),
-            sensor_unit
-        )
+        f"Ø Ist-Verlauf (letzte {len(history_df)})",
+        format_value(hist_avg, sensor_unit),
     )
 
 with col2:
     st.metric(
-        f"Minimum ({sensor_unit})",
-        format_value(
-            summary.get("minimum_value"),
-            sensor_unit
-        )
+        f"Ø Prognose ({target_weekday} +7d)",
+        format_value(fc_avg, sensor_unit),
+        delta=f"{delta_avg:+.2f} {sensor_unit}",
     )
 
 with col3:
     st.metric(
-        f"Maximum ({sensor_unit})",
-        format_value(
-            summary.get("maximum_value"),
-            sensor_unit
-        )
+        "Prognose Spanne (Min / Max)",
+        f"{forecast_df['value'].min():.2f} – {forecast_df['value'].max():.2f} {sensor_unit}",
     )
 
 with col4:
     st.metric(
-        "Anzahl Prognosen",
-        summary.get("forecast_count", len(forecast_df))
+        "Ausgewertete Datenbasis",
+        f"{len(history_df)} Datensätze",
     )
 
 
 # ---------------------------------------------------------
-# HORIZON FILTER
-# ---------------------------------------------------------
-
-horizons = sorted(
-    forecast_df["horizon_minutes"]
-    .dropna()
-    .astype(int)
-    .unique()
-    .tolist()
-)
-
-if not horizons:
-    st.warning("Es wurden keine gültigen Prognosehorizonte gefunden.")
-    st.stop()
-
-
-selected_horizon = st.selectbox(
-    "Prognosehorizont",
-    options=horizons,
-    format_func=lambda value: f"{value} Minuten"
-)
-
-
-selected_forecasts = forecast_df[
-    forecast_df["horizon_minutes"] == selected_horizon
-].copy()
-
-selected_forecasts = selected_forecasts.sort_values(
-    "forecast_timestamp"
-)
-
-if selected_forecasts.empty:
-    st.warning("Für diesen Prognosehorizont liegen keine Daten vor.")
-    st.stop()
-
-
-# ---------------------------------------------------------
-# HISTORICAL MEASUREMENTS
-# ---------------------------------------------------------
-
-start_datetime, end_datetime = utc_range(days=7)
-
-try:
-    measurements_payload = api.get_room_measurements(
-        room_id=selected_room,
-        start_datetime=start_datetime,
-        end_datetime=end_datetime,
-        sensor_type=selected_sensor
-    )
-
-    measurements_df = to_dataframe(measurements_payload)
-
-except RuntimeError as exc:
-    measurements_df = pd.DataFrame()
-
-    st.warning(
-        f"Historische Messwerte konnten nicht geladen werden: {exc}"
-    )
-
-
-# ---------------------------------------------------------
-# PREPARE HISTORICAL DATA
-# ---------------------------------------------------------
-
-if not measurements_df.empty:
-    required_measurement_columns = {
-        "StartDateTime",
-        "MeasureContent",
-    }
-
-    missing_measurement_columns = (
-        required_measurement_columns - set(measurements_df.columns)
-    )
-
-    if missing_measurement_columns:
-        st.warning(
-            "Die historische Messwertantwort enthält nicht alle "
-            "erforderlichen Felder: "
-            + ", ".join(sorted(missing_measurement_columns))
-        )
-        measurements_df = pd.DataFrame()
-
-    else:
-        measurements_df["StartDateTime"] = pd.to_datetime(
-            measurements_df["StartDateTime"],
-            utc=True,
-            errors="coerce"
-        )
-
-        measurements_df["MeasureContent"] = pd.to_numeric(
-            measurements_df["MeasureContent"],
-            errors="coerce"
-        )
-
-        measurements_df = measurements_df.dropna(
-            subset=["StartDateTime", "MeasureContent"]
-        )
-
-        measurements_df = measurements_df.sort_values(
-            "StartDateTime"
-        )
-
-
-# ---------------------------------------------------------
-# CHART
+# CHART 1: OVERLAID EVOLUTION (IST VS. PROGNOSE +7 TAGE)
 # ---------------------------------------------------------
 
 st.divider()
-st.subheader(f"{sensor_label} – Messwerte und Prognose")
+st.subheader("Direkter Evolutionsvergleich: Ist-Verlauf vs. Prognose (+7 Tage)")
 
-fig = go.Figure()
+comparison_df = pd.DataFrame({
+    "Uhrzeit_Ist": history_df["timestamp"].dt.strftime("%d.%m. %H:%M"),
+    "Uhrzeit_Prognose": forecast_df["timestamp"].dt.strftime("%d.%m. %H:%M"),
+    "Ist": history_df["value"].values,
+    "Prognose": forecast_df["value"].values,
+})
 
+fig_overlay = go.Figure()
 
-if not measurements_df.empty:
-    fig.add_trace(
-        go.Scatter(
-            x=measurements_df["StartDateTime"],
-            y=measurements_df["MeasureContent"],
-            mode="lines",
-            name=sensor_config["measurement_label"],
-            line={"width": 2}
-        )
-    )
-
-
-fig.add_trace(
+fig_overlay.add_trace(
     go.Scatter(
-        x=selected_forecasts["forecast_timestamp"],
-        y=selected_forecasts["predicted_value"],
+        x=comparison_df["Uhrzeit_Ist"],
+        y=comparison_df["Ist"],
         mode="lines+markers",
-        name=sensor_config["forecast_label"],
-        line={"width": 3, "dash": "dash"},
-        marker={"size": 9}
+        name=f"Ist-Verlauf ({sensor_label})",
+        line={"width": 3, "color": "#2ca02c"},
+        marker={"size": 8},
+        customdata=comparison_df["Uhrzeit_Prognose"],
+        hovertemplate="Ist (%{x}): %{y:.2f} " + sensor_unit + "<br>Zielzeitpunkt (+7d): %{customdata}<extra></extra>",
     )
 )
 
+fig_overlay.add_trace(
+    go.Scatter(
+        x=comparison_df["Uhrzeit_Ist"],
+        y=comparison_df["Prognose"],
+        mode="lines+markers",
+        name=f"Prognose (+7 Tage / {target_weekday})",
+        line={"width": 3, "dash": "dash", "color": "#d62728"},
+        marker={"size": 8, "symbol": "diamond"},
+        customdata=comparison_df["Uhrzeit_Prognose"],
+        hovertemplate="Prognose (%{customdata}): %{y:.2f} " + sensor_unit + "<extra></extra>",
+    )
+)
 
-fig.update_layout(
-    title=f"{sensor_label} – {selected_room}",
-    xaxis_title="Zeitpunkt",
+fig_overlay.update_layout(
+    title=f"{sensor_label} – Überlagerter Verlauf ({selected_room})",
+    xaxis_title="Messzeitpunkt (Ausgangsreihe) ↔ Korrespondierender Zeitpunkt (+7 Tage)",
     yaxis_title=f"{sensor_label} ({sensor_unit})",
     hovermode="x unified",
-    height=480,
-    margin={"l": 20, "r": 20, "t": 60, "b": 20}
+    height=460,
+    margin={"l": 20, "r": 20, "t": 60, "b": 20},
 )
 
-
-st.plotly_chart(fig, use_container_width=True)
-
-
-if measurements_df.empty:
-    st.info(
-        f"Es liegen keine historischen {sensor_label}-Messwerte "
-        "für den ausgewählten Zeitraum vor. "
-        "Die Prognose wird trotzdem angezeigt."
-    )
+st.plotly_chart(fig_overlay, use_container_width=True)
 
 
 # ---------------------------------------------------------
-# FORECAST TABLE
+# CHART 2: CHRONOLOGICAL TIMELINE
+# ---------------------------------------------------------
+
+st.subheader("Chronologischer Zeitstrahl (Ist → +7 Tage)")
+
+fig_timeline = go.Figure()
+
+fig_timeline.add_trace(
+    go.Scatter(
+        x=history_df["timestamp"],
+        y=history_df["value"],
+        mode="lines+markers",
+        name="Ist-Verlauf",
+        line={"width": 2.5, "color": "#2ca02c"},
+    )
+)
+
+fig_timeline.add_trace(
+    go.Scatter(
+        x=forecast_df["timestamp"],
+        y=forecast_df["value"],
+        mode="lines+markers",
+        name="Prognose (+7 Tage)",
+        line={"width": 2.5, "dash": "dash", "color": "#d62728"},
+    )
+)
+
+fig_timeline.update_layout(
+    xaxis_title="Zeitpunkt (UTC)",
+    yaxis_title=f"{sensor_label} ({sensor_unit})",
+    hovermode="x unified",
+    height=360,
+    margin={"l": 20, "r": 20, "t": 30, "b": 20},
+)
+
+st.plotly_chart(fig_timeline, use_container_width=True)
+
+
+# ---------------------------------------------------------
+# COMPARISON TABLE
 # ---------------------------------------------------------
 
 st.divider()
-st.subheader("Prognosedetails")
+st.subheader("Tabellarische Gegenüberstellung")
 
+table_df = pd.DataFrame({
+    "Zeitpunkt (Ist)": history_df["timestamp"].dt.strftime("%Y-%m-%d %H:%M"),
+    f"Ist-Wert ({sensor_unit})": history_df["value"].round(2),
+    "Zeitpunkt (+7 Tage)": forecast_df["timestamp"].dt.strftime("%Y-%m-%d %H:%M"),
+    f"Prognose ({sensor_unit})": forecast_df["value"].round(2),
+    f"Differenz ({sensor_unit})": (forecast_df["value"] - history_df["value"]).round(2),
+})
 
-display_columns = [
-    "room_id",
-    "sensor_type",
-    "forecast_origin",
-    "forecast_timestamp",
-    "horizon_minutes",
-    "predicted_value",
-    "unit",
-    "model_type",
-    "data_age_hours",
-    "is_stale",
-    "status",
-]
+st.dataframe(table_df, use_container_width=True, hide_index=True)
 
-available_columns = [
-    column
-    for column in display_columns
-    if column in selected_forecasts.columns
-]
-
-
-display_df = selected_forecasts[available_columns].copy()
-
-display_df = display_df.sort_values(
-    "forecast_timestamp"
-)
-
-
-st.dataframe(
-    display_df,
-    use_container_width=True,
-    hide_index=True
-)
-
-
-# ---------------------------------------------------------
-# FOOTER
-# ---------------------------------------------------------
-
-st.caption(
-    "Quelle: KICaGEM Room Forecast- und Measurements-API. "
-    "Prognosen werden anhand historischer Raumklimadaten erstellt."
-)
+st.caption("Quelle: KICaGEM On-Demand Room Climate Forecast API (Read-Only PostgreSQL + feste Raumattribute → +7 Tage).")

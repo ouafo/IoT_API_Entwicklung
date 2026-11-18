@@ -1,4 +1,3 @@
-
 """API routes for weather station measurements."""
 
 import re
@@ -21,37 +20,39 @@ from app.services.weather_service import get_weather_measurements
 
 def parse_datetime_input(value: str, field_name: str) -> datetime:
     """Parse ISO-8601 datetime input."""
-
     normalized = value.strip()
 
-    # Accept a space instead of T as separator.
+    # Accept space instead of T as separator
     if " " in normalized:
         normalized = normalized.replace(" ", "T", 1)
 
-    # Normalize UTC offsets such as +00.
+    # Normalize UTC offsets such as +00
     if re.search(r"[+-]\d{2}$", normalized):
         normalized += ":00"
 
-    # Normalize Z to UTC offset.
+    # Normalize Z to UTC offset
     if normalized.endswith("Z"):
         normalized = normalized[:-1] + "+00:00"
 
     try:
-        return datetime.fromisoformat(normalized)
+        parsed = datetime.fromisoformat(normalized)
+        if parsed.tzinfo is None:
+            parsed = parsed.astimezone()
+        return parsed
 
     except ValueError as exc:
         raise HTTPException(
             status_code=422,
             detail=(
                 f"{field_name} has an invalid datetime format. "
-                "Use ISO-8601, e.g. 2025-01-01T00:00:00Z."
+                "Use ISO-8601, e.g. 2026-11-18T00:00:00+01:00."
             ),
         ) from exc
 
 
 router = APIRouter(
     prefix=settings.API_PREFIX,
-    tags=["Weather stations"],
+    tags=["Weather Stations"],
 )
 
 
@@ -72,10 +73,8 @@ WeatherSensorType = Literal[
     summary="Retrieve weather station measurements",
     description=(
         "Returns weather station measurements for a selected building "
-        "and time range. Supported measurements include temperature, "
-        "humidity, wind direction, wind speed, barometric pressure "
-        "and rainfall. Results support OData filtering, sorting "
-        "and pagination."
+        "and time range. StartDateTime and EndDateTime are pre-filled with "
+        "current time minus 1 hour and current datetime so the user can adjust them."
     ),
 )
 async def read_weather_measurements(
@@ -86,12 +85,12 @@ async def read_weather_measurements(
 
     StartDateTime: str = Query(
         ...,
-        description="Start of the time range (ISO-8601, UTC).",
+        description="Required start datetime (pre-filled with current time minus 1 hour, editable by user).",
     ),
 
     EndDateTime: str = Query(
         ...,
-        description="End of the time range (ISO-8601, UTC).",
+        description="Required end datetime (pre-filled with current date and time, editable by user).",
     ),
 
     SensorTypeCode: Optional[WeatherSensorType] = Query(
@@ -137,12 +136,7 @@ async def read_weather_measurements(
 
     _user: str = Depends(verify_basic_auth),
 ):
-    """
-    Retrieve weather station measurements.
-
-    Supports OData filtering, sorting, pagination and record counts.
-    """
-
+    """Retrieve weather station measurements with OData support."""
     start_dt = parse_datetime_input(
         StartDateTime,
         "StartDateTime",
@@ -152,12 +146,6 @@ async def read_weather_measurements(
         EndDateTime,
         "EndDateTime",
     )
-
-    if start_dt.tzinfo is None or end_dt.tzinfo is None:
-        raise HTTPException(
-            status_code=422,
-            detail="Both timestamps must include a timezone.",
-        )
 
     if start_dt > end_dt:
         raise HTTPException(
