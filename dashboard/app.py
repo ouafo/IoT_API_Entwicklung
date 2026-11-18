@@ -60,6 +60,54 @@ WEEKDAY_DE = {
 }
 
 
+def _build_clean_axis_ticks(
+    hist_ts: pd.Series,
+    fc_ts: pd.Series,
+    max_ticks: int = 5,
+) -> tuple[list[int], list[str], str]:
+    """Create clean, non-overlapping x-axis ticks and a concise date-range caption."""
+    n = len(hist_ts)
+    indices = list(range(n))
+
+    if n <= max_ticks:
+        tick_indices = indices
+    else:
+        step = max(1, (n - 1) // (max_ticks - 1))
+        tick_indices = list(range(0, n, step))
+        if tick_indices[-1] != n - 1:
+            if (n - 1) - tick_indices[-1] < step / 2:
+                tick_indices[-1] = n - 1
+            else:
+                tick_indices.append(n - 1)
+
+    same_day = hist_ts.dt.date.nunique() == 1
+    tick_texts = []
+    for i in tick_indices:
+        ts = hist_ts.iloc[i]
+        if same_day:
+            tick_texts.append(ts.strftime("%H:%M"))
+        else:
+            tick_texts.append(ts.strftime("%d.%m. %H:%M"))
+
+    start_hist = hist_ts.iloc[0]
+    end_hist = hist_ts.iloc[-1]
+    start_fc = fc_ts.iloc[0]
+    end_fc = fc_ts.iloc[-1]
+
+    if same_day:
+        axis_label = (
+            f"Ist: {start_hist.strftime('%d.%m.%Y')} ({start_hist.strftime('%H:%M')}–{end_hist.strftime('%H:%M')})  |  "
+            f"+7d: {start_fc.strftime('%d.%m.%Y')}"
+        )
+    else:
+        axis_label = (
+            f"Ist: {start_hist.strftime('%d.%m.')}–{end_hist.strftime('%d.%m.%Y')}  |  "
+            f"+7d: {start_fc.strftime('%d.%m.')}–{end_fc.strftime('%d.%m.%Y')}"
+        )
+
+    return tick_indices, tick_texts, axis_label
+
+
 def build_mini_comparison_chart(
     history_list: list[dict],
     forecast_list: list[dict],
@@ -68,7 +116,7 @@ def build_mini_comparison_chart(
     hist_color: str,
     fc_color: str,
 ) -> go.Figure | None:
-    """Create a compact overlaid Ist vs. +7-day Forecast chart."""
+    """Create a compact overlaid Ist vs. +7-day Forecast chart with clean x-axis ticks."""
     if not history_list or not forecast_list:
         return None
 
@@ -78,52 +126,74 @@ def build_mini_comparison_chart(
     h_df["timestamp"] = pd.to_datetime(h_df["timestamp"], utc=True)
     f_df["timestamp"] = pd.to_datetime(f_df["timestamp"], utc=True)
 
-    labels = h_df["timestamp"].dt.strftime("%H:%M")
-    target_labels = f_df["timestamp"].dt.strftime("%d.%m. %H:%M")
+    x_idx = list(range(len(h_df)))
+    tick_vals, tick_texts, axis_label = _build_clean_axis_ticks(
+        h_df["timestamp"], f_df["timestamp"], max_ticks=5
+    )
+
+    hist_hover = h_df["timestamp"].dt.strftime("%d.%m.%Y %H:%M")
+    fc_hover = f_df["timestamp"].dt.strftime("%d.%m.%Y %H:%M")
 
     fig = go.Figure()
     fig.add_trace(
         go.Scatter(
-            x=labels,
+            x=x_idx,
             y=h_df["value"],
             mode="lines+markers",
-            name="Ist (letzte 15)",
+            name="Ist-Verlauf",
             line={"width": 2.5, "color": hist_color},
             marker={"size": 6},
-            hovertemplate="%{x}: %{y:.2f} " + unit + "<extra>Ist</extra>",
+            customdata=hist_hover,
+            hovertemplate="%{customdata}: <b>%{y:.2f} " + unit + "</b><extra>Ist</extra>",
         )
     )
     fig.add_trace(
         go.Scatter(
-            x=labels,
+            x=x_idx,
             y=f_df["value"],
             mode="lines+markers",
             name="Prognose (+7d)",
             line={"width": 2.5, "dash": "dash", "color": fc_color},
             marker={"size": 6, "symbol": "diamond"},
-            customdata=target_labels,
-            hovertemplate="%{customdata}: %{y:.2f} " + unit + "<extra>Prognose</extra>",
+            customdata=fc_hover,
+            hovertemplate="%{customdata}: <b>%{y:.2f} " + unit + "</b><extra>Prognose (+7d)</extra>",
         )
     )
 
     fig.update_layout(
-        title={"text": title, "font": {"size": 15}},
-        xaxis_title="Uhrzeit",
-        yaxis_title=unit,
+        title={
+            "text": title,
+            "font": {"size": 15},
+            "y": 0.96,
+            "x": 0,
+            "xanchor": "left",
+        },
+        xaxis={
+            "title": {"text": axis_label, "font": {"size": 11, "color": "#475569"}},
+            "tickmode": "array",
+            "tickvals": tick_vals,
+            "ticktext": tick_texts,
+            "tickangle": 0,
+            "showgrid": True,
+            "gridcolor": "#f1f5f9",
+        },
+        yaxis={
+            "title": unit,
+            "gridcolor": "#f1f5f9",
+        },
         hovermode="x unified",
-        height=275,
-        margin={"l": 10, "r": 10, "t": 42, "b": 10},
+        height=300,
+        margin={"l": 10, "r": 10, "t": 68, "b": 35},
         legend={
             "orientation": "h",
             "yanchor": "bottom",
             "y": 1.02,
-            "xanchor": "right",
-            "x": 1,
+            "xanchor": "left",
+            "x": 0,
             "font": {"size": 11},
         },
     )
     return fig
-
 
 with st.sidebar:
     st.title("🏢 KICaGEM")
