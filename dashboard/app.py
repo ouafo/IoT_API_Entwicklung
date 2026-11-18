@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta
 import pandas as pd
+import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
@@ -7,16 +8,12 @@ from api_client import api
 
 
 st.set_page_config(
-    page_title="Gesamtübersicht | KICaGEM",
-    page_icon="🏠",
+    page_title="KICaGEM | Campus & Energie Dashboard",
+    page_icon="🏢",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-
-# ---------------------------------------------------------
-# CUSTOM STYLING
-# ---------------------------------------------------------
 
 st.markdown(
     """
@@ -71,7 +68,7 @@ def build_mini_comparison_chart(
     hist_color: str,
     fc_color: str,
 ) -> go.Figure | None:
-    """Kompakter Evolutionsvergleich (Ist vs. +7 Tage) mit Tag, Monat und Jahr."""
+    """Create a compact overlaid Ist vs. +7-day Forecast chart."""
     if not history_list or not forecast_list:
         return None
 
@@ -81,8 +78,8 @@ def build_mini_comparison_chart(
     h_df["timestamp"] = pd.to_datetime(h_df["timestamp"], utc=True)
     f_df["timestamp"] = pd.to_datetime(f_df["timestamp"], utc=True)
 
-    labels = h_df["timestamp"].dt.strftime("%d.%m.%Y %H:%M")
-    target_labels = f_df["timestamp"].dt.strftime("%d.%m.%Y %H:%M")
+    labels = h_df["timestamp"].dt.strftime("%H:%M")
+    target_labels = f_df["timestamp"].dt.strftime("%d.%m. %H:%M")
 
     fig = go.Figure()
     fig.add_trace(
@@ -90,7 +87,7 @@ def build_mini_comparison_chart(
             x=labels,
             y=h_df["value"],
             mode="lines+markers",
-            name="Ist-Verlauf",
+            name="Ist (letzte 15)",
             line={"width": 2.5, "color": hist_color},
             marker={"size": 6},
             hovertemplate="%{x}: %{y:.2f} " + unit + "<extra>Ist</extra>",
@@ -111,12 +108,11 @@ def build_mini_comparison_chart(
 
     fig.update_layout(
         title={"text": title, "font": {"size": 15}},
-        xaxis_title="Datum & Uhrzeit",
-        xaxis_tickangle=-30,
+        xaxis_title="Uhrzeit",
         yaxis_title=unit,
         hovermode="x unified",
-        height=310,
-        margin={"l": 10, "r": 10, "t": 45, "b": 10},
+        height=275,
+        margin={"l": 10, "r": 10, "t": 42, "b": 10},
         legend={
             "orientation": "h",
             "yanchor": "bottom",
@@ -129,13 +125,9 @@ def build_mini_comparison_chart(
     return fig
 
 
-# ---------------------------------------------------------
-# SIDEBAR
-# ---------------------------------------------------------
-
 with st.sidebar:
     st.title("🏢 KICaGEM")
-    st.caption("Gesamtübersicht")
+    st.caption("Campus-, Gebäude- & Energiemanagement")
 
     st.divider()
 
@@ -150,19 +142,15 @@ with st.sidebar:
         st.rerun()
 
 
-# ---------------------------------------------------------
-# HERO HEADER
-# ---------------------------------------------------------
-
 target_date = datetime.now() + timedelta(days=7)
 target_weekday_de = WEEKDAY_DE.get(target_date.strftime("%A"), target_date.strftime("%A"))
 
 st.markdown(
     f"""
     <div class="hero-box">
-        <h1>🏠 Gesamtübersicht – KICaGEM Leitstand</h1>
+        <h1>🏢 KICaGEM – Campus & Energie Leitstand</h1>
         <p>
-            Direkter Überblick über Räume, Wetterstationen, Energieverbrauch und
+            Echtzeit-Überblick über Gebäude, Raumklima, Energieverbrauch und
             7-Tage-Wochenprognosen (Zieltag: <b>{target_weekday_de}, {target_date.strftime('%d.%m.%Y')}</b>)
         </p>
     </div>
@@ -170,10 +158,6 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-
-# ---------------------------------------------------------
-# FETCH OVERVIEW DATA
-# ---------------------------------------------------------
 
 health_ok = False
 db_status = "offline"
@@ -197,6 +181,13 @@ except RuntimeError:
     rooms = []
 
 try:
+    energy_rooms = api.get_energy_rooms()
+    if not isinstance(energy_rooms, list):
+        energy_rooms = []
+except RuntimeError:
+    energy_rooms = []
+
+try:
     stations = api.get_weather_stations()
     if not isinstance(stations, list):
         stations = []
@@ -204,21 +195,20 @@ except RuntimeError:
     stations = []
 
 rooms_df = pd.DataFrame(rooms)
-if not rooms_df.empty and "room_id" in rooms_df.columns:
-    rooms_df["room_id"] = rooms_df["room_id"].astype(str)
-    rooms_df = rooms_df.drop_duplicates(subset=["room_id"], keep="first")
+energy_room_ids = [r["full_room_id"] for r in energy_rooms if "full_room_id" in r]
 
+buildings = (
+    sorted(rooms_df["building"].dropna().unique().tolist())
+    if not rooms_df.empty and "building" in rooms_df.columns
+    else []
+)
 station_ids = [
     s["BuildingID"] for s in stations
     if isinstance(s, dict) and s.get("BuildingID")
 ]
 
 
-# ---------------------------------------------------------
-# TOP KPI BAR (4 COLUMNS AT A GLANCE)
-# ---------------------------------------------------------
-
-kpi1, kpi2, kpi3, kpi4 = st.columns(4)
+kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
 
 with kpi1:
     st.metric(
@@ -229,62 +219,63 @@ with kpi1:
 
 with kpi2:
     st.metric(
-        "Überwachte Räume",
-        len(rooms_df),
-        delta=(
-            f"{int(rooms_df['capacity'].sum())} Plätze gesamt"
-            if not rooms_df.empty and "capacity" in rooms_df.columns
-            else None
-        ),
+        "Erfasste Gebäude",
+        len(buildings),
+        delta=f"{', '.join(buildings)}" if buildings else None,
     )
 
 with kpi3:
+    st.metric(
+        "Überwachte Räume",
+        len(rooms_df),
+        delta=f"{len(energy_room_ids)} mit Energiezähler",
+    )
+
+with kpi4:
     st.metric(
         "Wetterstationen",
         len(station_ids),
         delta=f"Stationen: {', '.join(station_ids)}" if station_ids else None,
     )
 
-with kpi4:
+with kpi5:
     st.metric(
         "Prognose-Zieltag",
-        target_weekday_de,
-        delta=f"+7 Tage ({target_date.strftime('%d.%m.%Y')})",
+        f"{target_weekday_de}",
+        delta=f"+7 Tage ({target_date.strftime('%d.%m.')})",
     )
 
-
-# ---------------------------------------------------------
-# LIVE 3-DOMAIN QUICK PREVIEW (IST VS. +7 TAGE)
-# ---------------------------------------------------------
 
 st.divider()
 st.subheader("📊 Schnellvergleich auf einen Blick: Ist-Verlauf vs. Prognose (+7 Tage)")
 
 if not rooms_df.empty:
-    sel_col1, sel_col2, sel_col3 = st.columns([1.2, 1, 2])
+    sel_col1, sel_col2, sel_col3 = st.columns([1, 1, 2])
 
     with sel_col1:
-        preview_room = st.selectbox(
-            "Raum auswählen",
-            options=rooms_df["room_id"].tolist(),
+        preview_building = st.selectbox(
+            "Gebäude für Vorschau",
+            options=buildings,
             index=0,
         )
 
+    building_rooms_df = rooms_df[rooms_df["building"] == preview_building]
+    preview_room_options = building_rooms_df["full_room_id"].tolist()
+
     with sel_col2:
-        preview_n = st.slider(
-            "Historische Datenpunkte (N)",
-            min_value=10,
-            max_value=30,
-            value=15,
+        preview_room = st.selectbox(
+            "Raum für Vorschau",
+            options=preview_room_options,
+            index=0,
         )
 
-    selected_meta = rooms_df[
-        rooms_df["room_id"] == preview_room
+    selected_meta = building_rooms_df[
+        building_rooms_df["full_room_id"] == preview_room
     ].iloc[0].to_dict()
 
     with sel_col3:
         st.info(
-            f"**Raum {preview_room} (feste Attribute):** "
+            f"**Ausgewählter Raum {preview_room}:** "
             f"Kapazität **{selected_meta.get('capacity', 40)} Personen** · "
             f"Fläche **{selected_meta.get('area', 100.0):.0f} m²** · "
             f"Fenster **{selected_meta.get('window_count', 4)}**"
@@ -294,28 +285,29 @@ if not rooms_df.empty:
 
     # 1. Weather Temperature Preview
     with chart_col1:
-        weather_station_target = station_ids[0] if station_ids else None
+        weather_station_target = (
+            preview_building if preview_building in station_ids
+            else (station_ids[0] if station_ids else None)
+        )
         if weather_station_target:
             try:
                 w_data = api.get_weather_forecasts(
                     building_id=weather_station_target,
                     sensor_type="temperature",
-                    limit=preview_n,
+                    limit=15,
                 )
                 fig_w = build_mini_comparison_chart(
                     w_data.get("History", []),
                     w_data.get("Forecast", []),
-                    title=f"🌤️ Außentemperatur (Station {weather_station_target})",
+                    title=f"🌤️ Außentemperatur (Geb. {weather_station_target})",
                     unit=w_data.get("MeasureUnitCode", "°C"),
                     hist_color="#0284c7",
                     fc_color="#f97316",
                 )
                 if fig_w:
                     st.plotly_chart(fig_w, use_container_width=True)
-                else:
-                    st.caption("Keine aktuellen Wetterdaten verfügbar.")
-            except RuntimeError as exc:
-                st.caption(f"Wettervorschau nicht verfügbar: {exc}")
+            except RuntimeError:
+                st.info("Keine aktuellen Wetterdaten für diese Station.")
         st.page_link("pages/1_Wetter.py", label="→ Zu den Wetterprognosen", icon="🌤️")
 
     # 2. Room Climate Preview
@@ -324,7 +316,7 @@ if not rooms_df.empty:
             r_data = api.get_room_forecasts(
                 room_id=preview_room,
                 sensor_type="temperature",
-                limit=preview_n,
+                limit=15,
             )
             fig_r = build_mini_comparison_chart(
                 r_data.get("history", []),
@@ -336,62 +328,94 @@ if not rooms_df.empty:
             )
             if fig_r:
                 st.plotly_chart(fig_r, use_container_width=True)
-            else:
-                st.caption("Keine Raumklimadaten für diesen Raum.")
-        except RuntimeError as exc:
-            st.caption(f"Raumklimavorschau nicht verfügbar: {exc}")
+        except RuntimeError:
+            st.info(f"Für {preview_room} liegen keine Raumklimadaten vor.")
         st.page_link("pages/2_Raumklima.py", label="→ Zu den Raumklimaprognosen", icon="🌡️")
 
-    # 3. Energy Consumption Preview
+    # 3. Energy Consumption Preview (uses preview_room if metered, otherwise first metered room)
     with chart_col3:
-        try:
-            e_data = api.get_energy_forecasts(
-                room_id=preview_room,
-                limit=preview_n,
-            )
-            fig_e = build_mini_comparison_chart(
-                e_data.get("history", []),
-                e_data.get("forecast", []),
-                title=f"⚡ Energieverbrauch ({preview_room})",
-                unit=e_data.get("unit", "kWh"),
-                hist_color="#2563eb",
-                fc_color="#9333ea",
-            )
-            if fig_e:
-                st.plotly_chart(fig_e, use_container_width=True)
-            else:
-                st.caption("Keine Energiedaten für diesen Raum.")
-        except RuntimeError as exc:
-            st.caption(f"Energievorschau nicht verfügbar: {exc}")
+        energy_target_room = (
+            preview_room if preview_room in energy_room_ids
+            else (energy_room_ids[0] if energy_room_ids else None)
+        )
+        if energy_target_room:
+            try:
+                e_data = api.get_energy_forecasts(
+                    room_id=energy_target_room,
+                    limit=15,
+                )
+                fig_e = build_mini_comparison_chart(
+                    e_data.get("history", []),
+                    e_data.get("forecast", []),
+                    title=f"⚡ Energieverbrauch ({energy_target_room})",
+                    unit=e_data.get("unit", "kWh"),
+                    hist_color="#2563eb",
+                    fc_color="#9333ea",
+                )
+                if fig_e:
+                    st.plotly_chart(fig_e, use_container_width=True)
+            except RuntimeError:
+                st.info(f"Für {energy_target_room} liegen keine Energiedaten vor.")
+        else:
+            st.info("Keine Energiezähler-Daten verfügbar.")
         st.page_link("pages/3_Energie.py", label="→ Zu den Energieprognosen", icon="⚡")
 
 
-# ---------------------------------------------------------
-# ROOM INVENTORY TABLE (ONLY room_id + FIXED ATTRIBUTES)
-# ---------------------------------------------------------
-
 st.divider()
-st.subheader("📋 Raumübersicht & Feste Raumattribute")
+st.subheader("🏛️ Campus-Struktur & Raumübersicht")
 
 if not rooms_df.empty:
-    display_df = rooms_df[
-        ["room_id", "capacity", "area", "window_count", "status"]
-    ].rename(
-        columns={
-            "room_id": "Raum-ID",
-            "capacity": "Kapazität (Pers.)",
-            "area": "Fläche (m²)",
-            "window_count": "Fenster",
-            "status": "Status",
-        }
-    )
-    st.dataframe(
-        display_df,
-        use_container_width=True,
-        hide_index=True,
-        height=320,
-    )
+    struct_col1, struct_col2 = st.columns([1, 1.6])
+
+    with struct_col1:
+        building_summary = (
+            rooms_df.groupby("building", as_index=False)
+            .agg(
+                Raeume=("room_id", "count"),
+                Kapazitaet=("capacity", "sum"),
+                Flaeche_m2=("area", "sum"),
+            )
+        )
+        fig_buildings = px.bar(
+            building_summary,
+            x="building",
+            y="Raeume",
+            text="Raeume",
+            color="building",
+            title="Überwachte Räume pro Gebäude",
+            labels={"building": "Gebäude", "Raeume": "Anzahl Räume"},
+        )
+        fig_buildings.update_traces(textposition="outside")
+        fig_buildings.update_layout(
+            showlegend=False,
+            height=330,
+            margin={"l": 10, "r": 10, "t": 45, "b": 10},
+        )
+        st.plotly_chart(fig_buildings, use_container_width=True)
+
+    with struct_col2:
+        rooms_df["Energiezähler"] = rooms_df["full_room_id"].isin(energy_room_ids).map(
+            {True: "✅ Ja", False: "–"}
+        )
+        display_df = rooms_df[
+            ["building", "room_id", "full_room_id", "capacity", "area", "window_count", "Energiezähler"]
+        ].rename(
+            columns={
+                "building": "Gebäude",
+                "room_id": "Raum",
+                "full_room_id": "Vollständige ID",
+                "capacity": "Kapazität (Pers.)",
+                "area": "Fläche (m²)",
+                "window_count": "Fenster",
+            }
+        )
+        st.dataframe(
+            display_df,
+            use_container_width=True,
+            hide_index=True,
+            height=330,
+        )
 else:
     st.info("Keine Raumdaten aus der Datenbank geladen.")
 
-st.caption("KICaGEM IoT & AI Analytics Platform · Gesamtübersicht · Read-Only PostgreSQL · 7-Tage-Wochenprognose")
+st.caption("KICaGEM IoT & AI Analytics Platform · Read-Only PostgreSQL · 7-Tage-Wochenprognose")

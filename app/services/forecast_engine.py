@@ -1,8 +1,8 @@
-"""Leichtgewichtige, schreibgeschützte PostgreSQL-Prognose-Engine mit In-Memory-Cache.
+"""Lightweight, read-only PostgreSQL + in-memory cached forecasting engine.
 
-Verwendet die letzten N (Standard: 15, maximal: 30) validen Messwerte pro Raum oder
-Wetterstation, um den erwarteten Verlauf in genau 7 Tagen (gleicher Wochentag und
-gleiche Uhrzeit nächste Woche) zu berechnen – ohne CSV-Dateien oder Modell-Training.
+Uses the latest N=15 valid measurements per room or building to project
+a 7-day-ahead (same weekday & time next week) evolution without writing
+any CSV files or database tables.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from app.logger import logger
 
 HISTORY_WINDOW_SIZE = 15
 FORECAST_OFFSET_DAYS = 7
-CACHE_TTL_SECONDS = 300  # 5 Minuten In-Memory-Cache
+CACHE_TTL_SECONDS = 300  # 5 minutes in-memory cache
 
 
 DEFAULT_ROOM_ATTRIBUTES = {
@@ -160,7 +160,7 @@ def _normalize_unit(raw_unit: Optional[str], default_unit: str) -> str:
 
 
 def parse_room_identifier(room_id: str) -> tuple[Optional[str], str]:
-    """Akzeptiert sowohl 'A203' als auch 'A-A203' / 'C-C2.005'."""
+    """Accept both 'A203' and 'A-A203' / 'C-C2.005' formats."""
     cleaned = room_id.strip()
     if "-" in cleaned:
         building_part, room_part = cleaned.split("-", 1)
@@ -170,7 +170,7 @@ def parse_room_identifier(room_id: str) -> tuple[Optional[str], str]:
 
 
 def list_known_rooms() -> list[dict[str, Any]]:
-    """Gibt alle bekannten Räume inklusive physischer Raumattribute zurück (gecacht)."""
+    """Return all distinct rooms including their physical attributes (cached)."""
     cached = _cache.get("known_rooms")
     if cached is not None:
         return cached
@@ -178,7 +178,7 @@ def list_known_rooms() -> list[dict[str, Any]]:
     try:
         raw_rooms = queries.get_rooms(limit=settings.MAX_PAGE_SIZE, offset=0)
     except Exception as exc:
-        logger.warning(f"Fallback bei Raumermittlung aufgrund von queries.get_rooms: {exc}")
+        logger.warning(f"Fallback room discovery due to queries.get_rooms error: {exc}")
         raw_rooms = []
 
     rooms: list[dict[str, Any]] = []
@@ -214,13 +214,52 @@ def list_known_rooms() -> list[dict[str, Any]]:
     return rooms
 
 
+def list_energy_capable_rooms() -> list[dict[str, Any]]:
+    """Return only rooms that actually have >= 2 energy meter readings in PostgreSQL."""
+    cached = _cache.get("energy_capable_rooms")
+    if cached is not None:
+        return cached
+
+    schema = settings.DB_SCHEMA
+    query = f"""
+        SELECT building, room_location
+        FROM "{schema}"."room_energy"
+        WHERE building IS NOT NULL
+          AND room_location IS NOT NULL
+          AND "Wirkenergie_Import_L123_T1" IS NOT NULL
+        GROUP BY building, room_location
+        HAVING COUNT(DISTINCT start) >= 2
+        ORDER BY building, room_location;
+    """
+
+    conn = connection.get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(query)
+        energy_pairs = {
+            (str(row[0]).strip(), str(row[1]).strip())
+            for row in cur.fetchall()
+        }
+    finally:
+        connection.put_conn(conn)
+
+    all_rooms = list_known_rooms()
+    energy_rooms = [
+        r for r in all_rooms
+        if (r["building"], r["room_location"]) in energy_pairs
+    ]
+
+    _cache.set("energy_capable_rooms", energy_rooms)
+    return energy_rooms
+
+
 def resolve_room(
     room_id: str,
     capacity: Optional[int] = None,
     area: Optional[float] = None,
     window_count: Optional[int] = None,
 ) -> dict[str, Any]:
-    """Löst Raum-Metadaten und physische Attribute auf ('A203' oder 'A-A203')."""
+    """Resolve room metadata and physical attributes from either 'A203' or 'A-A203'."""
     building_hint, room_location = parse_room_identifier(room_id)
     rooms = list_known_rooms()
 
@@ -234,13 +273,13 @@ def resolve_room(
     ]
 
     if not matches:
-        raise ValueError(f"Der Raum '{room_id}' wurde in der Datenbank nicht gefunden.")
+        raise ValueError(f"Room '{room_id}' was not found in the database.")
 
     if len(matches) > 1:
         buildings = ", ".join(sorted({m["building"] for m in matches}))
         raise ValueError(
-            f"Der Raum '{room_id}' existiert in mehreren Gebäuden ({buildings}). "
-            "Bitte '<Gebäude>-<Raum>' angeben (z. B. 'A-A203')."
+            f"Room '{room_id}' exists in multiple buildings ({buildings}). "
+            "Please specify '<Building>-<Room>', e.g. 'A-A203'."
         )
 
     room = dict(matches[0])
@@ -259,7 +298,7 @@ def _room_physics_factor(
     sensor_type: str,
     room: dict[str, Any],
 ) -> float:
-    """Berechnet einen begrenzten physischen Skalierungsfaktor aus Kapazität, Fläche & Fenstern."""
+    """Compute a bounded physical scaling multiplier from capacity, area & window_count."""
     capacity = max(1.0, float(room.get("capacity") or DEFAULT_ROOM_ATTRIBUTES["capacity"]))
     area = max(5.0, float(room.get("area") or DEFAULT_ROOM_ATTRIBUTES["area"]))
     windows = max(
@@ -297,7 +336,7 @@ def _project_series_next_week(
     physics_factor: float = 1.0,
     is_circular_angle: bool = False,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Erzeugt die gepaarte historische Reihe (N Punkte) und die +7-Tage-Prognosereihe."""
+    """Build paired 15-point historical series and 15-point +7-day forecast series."""
     n = len(values)
     history_points = [
         {
@@ -364,11 +403,7 @@ def generate_room_climate_forecast(
 ) -> dict[str, Any]:
     sensor_key = sensor_type.strip().lower()
     if sensor_key not in ROOM_CLIMATE_SENSORS:
-        erlaubt = ", ".join(ROOM_CLIMATE_SENSORS.keys())
-        raise ValueError(
-            f"Nicht unterstützter Raumklima-Sensortyp: '{sensor_type}'. "
-            f"Erlaubte Werte: {erlaubt}."
-        )
+        raise ValueError(f"Unsupported room climate sensor: {sensor_type}")
 
     room = resolve_room(room_id, capacity=capacity, area=area, window_count=window_count)
     n_records = max(5, min(limit, 50))
@@ -603,11 +638,7 @@ def generate_weather_forecast(
 ) -> dict[str, Any]:
     sensor_key = sensor_type.strip().lower()
     if sensor_key not in WEATHER_SENSORS:
-        erlaubt = ", ".join(WEATHER_SENSORS.keys())
-        raise ValueError(
-            f"Nicht unterstützter Wetter-Sensortyp: '{sensor_type}'. "
-            f"Erlaubte Werte: {erlaubt}."
-        )
+        raise ValueError(f"Unsupported weather sensor: {sensor_type}")
 
     b_id = building_id.strip()
     n_records = max(5, min(limit, 50))
