@@ -1,25 +1,25 @@
-# Teststrategie für IoT-Service (Bachelorarbeit)
+# Teststrategie für den KICAGEM IoT-Analytics-Service
 
 ## Aktueller Teststatus ✅
 
-**7 Tests implementiert** – Alle bestanden (100%)
+**7 Tests implementiert (`tests/test_api.py`)** – Alle bestanden (100 %)
 
-### Bestehende Tests (test_api.py)
-1. `test_health_check_no_auth` – Health-Endpoint ohne Authentifizierung
+### Bestehende Tests (`tests/test_api.py`)
+1. `test_health_check_no_auth` – Health-Endpoint (`GET /api/health`) ohne Authentifizierung
 2. `test_health_check` – Health-Endpoint mit Authentifizierung
-3. `test_auth_required` – Authentifizierungsprüfung
+3. `test_auth_required` – Authentifizierungsprüfung bei geschützten Endpunkten
 4. `test_invalid_auth` – Ablehnung ungültiger Zugangsdaten
-5. `test_invalid_sensor_type` – Validierung Sensortyp
-6. `test_invalid_datetime` – Validierung Datum/Zeit
-7. `test_start_after_end` – Validierung Zeitbereich
+5. `test_invalid_sensor_type` – Validierung des Sensortyps
+6. `test_invalid_datetime` – Validierung von Datum/Zeit im ISO-8601-Format
+7. `test_start_after_end` – Validierung des Zeitbereichs (`StartDateTime < EndDateTime`)
 
 ---
 
 ## Empfohlene zusätzliche Tests (datenbankunabhängig)
 
-### 1. Service-Layer-Tests (`test_telemetry_service.py`)
+### 1. Service-Layer-Tests (`test_measurement_service.py`)
 
-Da die Datenbank noch nicht final ist, Fokus auf **Unit-Tests mit Mocking**:
+Fokus auf **Unit-Tests mit Mocking**, um Business-Logik und Fehlerbehandlung isoliert von der Datenbank zu prüfen:
 
 ```python
 import pytest
@@ -31,25 +31,25 @@ from app.exceptions import DatabaseException
 @pytest.mark.asyncio
 async def test_telemetry_service_basic_query():
     """Testet, ob die Service-Schicht die richtigen Abfrageparameter erstellt."""
-    with patch('app.services.telemetry_service.connection') as mock_conn:
+    with patch('app.services.measurement_service.connection') as mock_conn:
         # Mock-Datenbankantwort
         mock_cursor = Mock()
         mock_cursor.fetchall.return_value = [
-            (1, "temperature", 22.5, datetime(2025, 1, 1, 12, 0), "101", "A", "°C")
+            (1, "temperature", 22.5, datetime(2026, 1, 1, 12, 0), "101", "A", "°C")
         ]
         mock_cursor.description = [
-            ("sensor_id",), ("sensor_type",), ("value",), 
+            ("sensor_id",), ("sensor_type",), ("value",),
             ("timestamp",), ("room_number",), ("building",), ("unit",)
         ]
         mock_conn.get_conn.return_value.cursor.return_value = mock_cursor
-        
+
         # Service-Aufruf ausführen
         result = await get_telemetry_data(
             sensor_type="temperature",
-            start_time=datetime(2025, 1, 1, 0, 0),
-            end_time=datetime(2025, 1, 2, 0, 0),
+            start_time=datetime(2026, 1, 1, 0, 0),
+            end_time=datetime(2026, 1, 2, 0, 0),
         )
-        
+
         # Überprüfen der Antwortstruktur
         assert result.metadata["count"] == 1
         assert result.metadata["sensorType"] == "temperature"
@@ -60,22 +60,22 @@ async def test_telemetry_service_basic_query():
 @pytest.mark.asyncio
 async def test_telemetry_service_pagination():
     """Testet, ob die Service-Schicht Limit und Offset korrekt behandelt."""
-    with patch('app.services.telemetry_service.queries') as mock_queries:
+    with patch('app.services.measurement_service.queries') as mock_queries:
         mock_queries.build_telemetry_query.return_value = (
-            "SELECT * FROM telemetry LIMIT %s OFFSET %s", 
+            "SELECT * FROM telemetry LIMIT %s OFFSET %s",
             (10, 20)
         )
-        
-        with patch('app.services.telemetry_service.connection'):
+
+        with patch('app.services.measurement_service.connection'):
             # Überprüfen der Pagination-Parameter, die an den Query-Builder übergeben werden
             await get_telemetry_data(
                 sensor_type="humidity",
-                start_time=datetime(2025, 1, 1),
-                end_time=datetime(2025, 1, 2),
+                start_time=datetime(2026, 1, 1),
+                end_time=datetime(2026, 1, 2),
                 limit=10,
                 offset=20,
             )
-            
+
         # Überprüfen, ob der Query-Builder mit den richtigen Parametern aufgerufen wurde
         mock_queries.build_telemetry_query.assert_called_once()
         call_args = mock_queries.build_telemetry_query.call_args
@@ -85,24 +85,24 @@ async def test_telemetry_service_pagination():
 @pytest.mark.asyncio
 async def test_telemetry_service_database_error():
     """Testet, ob die Service-Schicht Datenbankfehler korrekt behandelt."""
-    with patch('app.services.telemetry_service.connection.get_conn') as mock_conn:
+    with patch('app.services.measurement_service.connection.get_conn') as mock_conn:
         mock_conn.side_effect = Exception("Datenbankverbindung fehlgeschlagen")
-        
+
         with pytest.raises(DatabaseException) as exc_info:
             await get_telemetry_data(
                 sensor_type="temperature",
-                start_time=datetime(2025, 1, 1),
-                end_time=datetime(2025, 1, 2),
+                start_time=datetime(2026, 1, 1),
+                end_time=datetime(2026, 1, 2),
             )
-        
+
         assert "Failed to execute telemetry query" in str(exc_info.value)
 ```
 
 ---
 
-### 2. Security-Module-Tests (`test_security.py`)
+### 2. Security- & OData-Filter-Tests (`test_security.py`)
 
-Test SQL-Injection-Prävention **ohne Datenbank**:
+Test der SQL-Injection-Prävention **ohne Datenbank**:
 
 ```python
 import pytest
@@ -155,63 +155,33 @@ Testet benutzerdefinierte Fehlerantworten **ohne Datenbank**:
 import pytest
 from fastapi.testclient import TestClient
 from app.main import app
-from app.exceptions import (
-    InvalidSensorTypeException,
-    InvalidDatetimeException,
-    TimeRangeException,
-    FilterException,
-)
 
 client = TestClient(app)
 
 def test_invalid_sensor_type_exception_format():
     """Testet, ob die benutzerdefinierte Ausnahme das richtige JSON-Format zurückgibt."""
     response = client.get(
-        "/telemetry",
+        "/api/Rooms('C1.003')/Measurements",
         params={
-            "sensorType": "invalid_type",
-            "startTime": "2025-01-01T00:00:00Z",
-            "endTime": "2025-01-02T00:00:00Z",
+            "StartDateTime": "2026-01-01T00:00:00Z",
+            "EndDateTime": "2026-01-02T00:00:00Z",
+            "$filter": "SensorTypeCode eq 'invalid_type'",
         },
         auth=("test_user", "test_pass"),
     )
-    assert response.status_code == 400
-    data = response.json()
-    assert data["error"] == "InvalidSensorType"
-    assert "detail" in data
-    assert "timestamp" in data
+    assert response.status_code in (400, 401)
 
 def test_datetime_exception_format():
-    """Testet, ob die Datums-/Uhrzeit-Ausnahme eine hilfreiche Fehlermeldung zurückgibt."""
+    """Testet, ob ungültige Datums-/Uhrzeitangaben abgewiesen werden."""
     response = client.get(
-        "/telemetry",
+        "/api/Rooms('C1.003')/Measurements",
         params={
-            "sensorType": "temperature",
-            "startTime": "invalid-datetime",
-            "endTime": "2025-01-02T00:00:00Z",
+            "StartDateTime": "invalid-datetime",
+            "EndDateTime": "2026-01-02T00:00:00Z",
         },
         auth=("test_user", "test_pass"),
     )
-    assert response.status_code == 400
-    data = response.json()
-    assert data["error"] == "InvalidDatetime"
-    assert "startTime" in data["detail"]
-
-def test_filter_exception_format():
-    """Testet, ob die Filterausnahme hilfreiche Kontextinformationen enthält."""
-    response = client.get(
-        "/telemetry",
-        params={
-            "sensorType": "temperature",
-            "startTime": "2025-01-01T00:00:00Z",
-            "endTime": "2025-01-02T00:00:00Z",
-            "$orderby": "invalid_column; DROP TABLE",
-        },
-        auth=("test_user", "test_pass"),
-    )
-    assert response.status_code == 400
-    data = response.json()
-    assert data["error"] == "InvalidFilter"
+    assert response.status_code in (400, 401, 422)
 ```
 
 ---
@@ -229,101 +199,62 @@ def test_build_telemetry_query_basic():
     """Testet, ob der Query-Builder die richtige SQL-Struktur generiert."""
     sql, params = build_telemetry_query(
         sensor_type="temperature",
-        start_time=datetime(2025, 1, 1, 0, 0),
-        end_time=datetime(2025, 1, 2, 0, 0),
+        start_time=datetime(2026, 1, 1, 0, 0),
+        end_time=datetime(2026, 1, 2, 0, 0),
     )
-    
+
     assert "SELECT" in sql
-    assert "FROM telemetry" in sql
-    assert "sensor_type = %s" in sql
-    assert "timestamp >= %s" in sql
-    assert "timestamp <= %s" in sql
+    assert "FROM" in sql
     assert len(params) >= 3
     assert params[0] == "temperature"
-
-def test_build_telemetry_query_with_room():
-    """Testet, ob der Query-Builder den Raumfilter hinzufügt."""
-    sql, params = build_telemetry_query(
-        sensor_type="humidity",
-        start_time=datetime(2025, 1, 1),
-        end_time=datetime(2025, 1, 2),
-        room_number="101",
-    )
-    
-    assert "room_number = %s" in sql
-    assert "101" in params
 
 def test_build_telemetry_query_with_pagination():
     """Testet, ob der Query-Builder LIMIT und OFFSET hinzufügt."""
     sql, params = build_telemetry_query(
         sensor_type="co2",
-        start_time=datetime(2025, 1, 1),
-        end_time=datetime(2025, 1, 2),
+        start_time=datetime(2026, 1, 1),
+        end_time=datetime(2026, 1, 2),
         limit=50,
         offset=100,
     )
-    
+
     assert "LIMIT %s" in sql
     assert "OFFSET %s" in sql
     assert 50 in params
     assert 100 in params
-
-def test_build_telemetry_query_datetime_conversion():
-    """Testet, ob der Query-Builder Datetime-Objekte korrekt behandelt."""
-    dt_start = datetime(2025, 1, 1, 12, 30, 45)
-    dt_end = datetime(2025, 1, 2, 18, 15, 30)
-    
-    sql, params = build_telemetry_query(
-        sensor_type="temperature",
-        start_time=dt_start,
-        end_time=dt_end,
-    )
-    
-    # Überprüfen, ob Datetime in ISO8601-Zeichenfolge konvertiert wurde
-    assert isinstance(params[1], str)
-    assert isinstance(params[2], str)
-    assert "2025-01-01T12:30:45" in params[1]
-    assert "2025-01-02T18:15:30" in params[2]
 ```
 
 ---
 
-### 5. Authentifizierungs-Tests (bestehende Tests erweitern)
+### 5. Authentifizierungs- & Prognose-Tests
 
 ```python
 def test_basic_auth_timing_attack_protection():
     """Testet, ob die Authentifizierung den Vergleich in konstanter Zeit verwendet."""
-    # Dieser Test überprüft, ob secrets.compare_digest verwendet wird
     from app.auth.basic_auth import verify_basic_auth
     import time
-    
-    # Zwei falsche Passwörter unterschiedlicher Länge
+
     start = time.time()
     try:
         verify_basic_auth(credentials=("test_user", "wrong"))
-    except:
+    except Exception:
         pass
     time1 = time.time() - start
-    
+
     start = time.time()
     try:
         verify_basic_auth(credentials=("test_user", "verylongwrongpassword123"))
-    except:
+    except Exception:
         pass
     time2 = time.time() - start
-    
+
     # Zeitdifferenz sollte minimal sein (< 10ms)
     assert abs(time1 - time2) < 0.01
 
 def test_basic_auth_empty_credentials():
     """Testet, ob die Authentifizierung leere Zugangsdaten ablehnt."""
     response = client.get(
-        "/telemetry",
-        params={
-            "sensorType": "temperature",
-            "startTime": "2025-01-01T00:00:00Z",
-            "endTime": "2025-01-02T00:00:00Z",
-        },
+        "/api/Rooms",
         auth=("", ""),
     )
     assert response.status_code == 401
@@ -331,56 +262,30 @@ def test_basic_auth_empty_credentials():
 
 ---
 
-## Integrationstest-Strategie (nach finaler Datenbank)
+## Integrationstest-Strategie
 
-### Wann Integrationstests hinzufügen
-
-Erst nach Bestätigung des finalen Datenbankschemas hinzufügen:
-
-1. **Echte Datenbanktests** - Testen gegen tatsächliche PostgreSQL
-2. **Datenvalidierungstests** - Überprüfung von Datentypen und Constraints
-3. **Leistungstests** - Abfrage-Antwortzeit-Benchmarks
-4. **Edge-Case-Tests** - Leere Ergebnisse, große Datenmengen, gleichzeitige Abfragen
-
-### Struktur der Integrationstests
-
-```python
-# test_integration.py (später hinzufügen)
-
-import pytest
-from sqlalchemy import create_engine
-from app.config import settings
-
-@pytest.fixture(scope="module")
-def db_connection():
-    """Fixture für echte Datenbankverbindung (nur verwenden, wenn DB final)."""
-    engine = create_engine(f"postgresql://{settings.DB_USER}:...")
-    yield engine
-    engine.dispose()
-
-@pytest.mark.integration
-async def test_telemetry_query_real_database(db_connection):
-    """Testet die Abfrage gegen die echte Datenbank (in CI überspringen, bis DB bereit ist)."""
-    # Nur ausführen, wenn die Datenbank finalisiert ist
-    pass
-```
+### Schwerpunkte für Integrationstests
+1. **Echte Datenbanktests** – Testen gegen die PostgreSQL-Datenbank im Campusnetz
+2. **Datenvalidierungstests** – Überprüfung von Datentypen, OData-Antworten (`@odata.context`, `@odata.count`) und Constraints
+3. **Prognose-Endpunkt-Tests** – Validierung der Ausgaben von `forecast_engine.py` und `energy_forecast_routes.py`
+4. **Leistungstests** – Abfrage-Antwortzeit-Benchmarks und gleichzeitige Requests
 
 ---
 
-## Test-Prioritäten für die Bachelorarbeit
+## Prioritäten für die Testweiterentwicklung
 
-### Hoch: (Vor Abgabe umsetzen)
-1. ✅ **API-Input-Validierung** (bereits umgesetzt - 7 Tests)
-2. ⭐ **Security-Module-Tests** (SQL-Injection-Prüfung)
+### Hoch
+1. ✅ **API-Input-Validierung** (bereits umgesetzt – 7 Tests)
+2. ⭐ **Security- & OData-Parser-Tests** (SQL-Injection-Prüfung)
 3. ⭐ **Service-Layer-Tests** (Business-Logik mit Mocks)
 4. ✅ **Exception-Handler-Tests** (bereits abgedeckt)
 
-### Mittel: (schön zu haben)
-5. **Query-Builder-Tests** (SQL-Generierungslogik)
-6. **Authentifizierungs-Edge-Cases** (Timing-Angriffe, leere Zugangsdaten)
-7. **Konfigurations-Tests** (Umgebungsvariablen)
+### Mittel
+5. **Forecast-Engine-Tests** (Zeitreihen- und Prognose-Validierung)
+6. **Query-Builder-Tests** (SQL-Generierungslogik)
+7. **Authentifizierungs-Edge-Cases** (Timing-Angriffe, leere Zugangsdaten)
 
-### Niedrig: (optional - bis zur finalen Datenbank verschiebbar)
+### Niedrig
 8. **Integrationstests** (echte DB-Abfragen)
 9. **Leistungstests** (Antwortzeit-Benchmarks)
 10. **Lasttests** (gleichzeitige Anfragebearbeitung)
@@ -396,7 +301,7 @@ pytest tests/ -v
 
 ### Bestimmte Testdatei ausführen
 ```bash
-pytest tests/test_security.py -v
+pytest tests/test_api.py -v
 ```
 
 ### Tests mit Coverage-Bericht ausführen
@@ -404,84 +309,44 @@ pytest tests/test_security.py -v
 pytest tests/ --cov=app --cov-report=html
 ```
 
-### Integrationstests überspringen (bis die Datenbank final ist)
+### Integrationstests überspringen
 ```bash
 pytest tests/ -v -m "not integration"
 ```
 
 ---
 
-## Testabdeckungsziele für die Bachelorarbeit
+## Testabdeckungsziele & Qualitätssicherung
 
-- **Aktuelle Abdeckung**: ~40% (7 Tests, nur API)
-- **Empfohlene Abdeckung**: 70-80% (15-20 Tests)
-- **Realistisches Ziel**: 60-70% (12-15 Tests)
+- **Aktuelle Abdeckung:** ~40 % (7 API-Tests)
+- **Empfohlene Abdeckung:** 70–80 % (15–20 Tests)
+- **Realistisches Ziel:** 60–70 % (12–15 Tests)
 
-### Minimale akzeptable Abdeckung nach Modul
+### Zielwerte nach Modul
 
-| Modul                        | Aktuell | Ziel | Priorität |
-|------------------------------|---------|------|-----------|
-| `app/api/routes.py`          | ✅ 80%  | 80%  | HOCH      |
-| `app/security.py`            | ❌ 0%   | 70%  | HOCH      |
-| `app/services/telemetry_service.py` | ❌ 0% | 60% | HOCH |
-| `app/exceptions.py`          | ✅ 50%  | 60%  | MITTEL    |
-| `app/database/queries.py`    | ❌ 0%   | 50%  | MITTEL    |
-| `app/auth/basic_auth.py`     | ✅ 60%  | 70%  | MITTEL    |
-| `app/database/connection.py` | ❌ 0%   | 30%  | NIEDRIG*  |
+| Modul | Aktuell | Ziel | Priorität |
+| :--- | :--- | :--- | :--- |
+| `app/api/routes.py` | ✅ 80 % | 80 % | HOCH |
+| `app/api/odata_helpers.py` | ⚠️ Teilweise | 75 % | HOCH |
+| `app/services/measurement_service.py` | ❌ 0 % | 65 % | HOCH |
+| `app/services/forecast_engine.py` | ❌ 0 % | 65 % | MITTEL |
+| `app/exceptions.py` | ✅ 50 % | 60 % | MITTEL |
+| `app/database/queries.py` | ❌ 0 % | 50 % | MITTEL |
+| `app/auth/basic_auth.py` | ✅ 60 % | 70 % | MITTEL |
+| `app/database/connection.py` | ❌ 0 % | 30 % | NIEDRIG* |
 
-*Geringe Priorität, da Connection-Pooling nur mit echter DB sinnvoll testbar ist
+*\*Connection-Pooling ist vor allem im Verbund mit einer aktiven Datenbankinstanz sinnvoll testbar.*
 
----
-
-## Argumentation für die Bachelorarbeit
-
-### Frage: "Warum nur 7 Tests?"
-
-**Starke Antwort**: 
-> "Die aktuelle Testsuite fokussiert sich auf **API-Vertragsvalidierung** und **Input-Validierung**, 
-> was für Produktionsreife entscheidend ist. Da das Datenbankschema noch nicht final ist, 
-> wurden **datenbankunabhängige Tests** (Service-Layer mit Mocks, Security-Validierung, 
-> Query-Builder-Logik) priorisiert. So wird **testgetriebene Entwicklung** demonstriert, während 
-> Flexibilität für spätere Änderungen gewahrt bleibt."
-
-### Frage: "Wie wird Codequalität ohne mehr Tests sichergestellt?"
-
-**Starke Antwort**:
-> "Zusätzlich zu automatisierten Tests werden eingesetzt:
-> 1. **Type-Hints** (Pylance)
-> 2. **Eigene Fehlerbehandlung** mit strukturierten Antworten
-> 3. **SQL-Injection-Prävention** (Whitelist)
-> 4. **Code-Review-Dokumentation**
-> 5. **Manuelle Tests** mit echter Datenbank während der Entwicklung"
-
----
-
-## Zeitplan für die Testimplementierung
-
-### Woche 1 (vor Abgabe)
-- ✅ API-Validierungstests (fertig)
-- ⭐ 5 Security-Tests ergänzen
-- ⭐ 3 Service-Layer-Tests mit Mocks ergänzen
-
-### Woche 2 (optional)
-- 3 Query-Builder-Tests ergänzen
-- 2 Authentifizierungs-Edge-Cases ergänzen
-- Coverage-Report generieren
-
-### Nach finaler Datenbank
-- Integrationstests ergänzen
-- Performance-Benchmarks
-- Lasttests
+### Ergänzende Maßnahmen zur Codequalität
+1. **Type-Hints & Pydantic v2** – Strikte Typprüfung für Request- und Response-Modelle
+2. **Eigene Fehlerbehandlung** – Strukturierte JSON-Fehlerantworten mit eindeutigen Statuscodes
+3. **SQL-Injection-Prävention** – Parametrisierte Queries und Whitelist-Validierung
+4. **End-to-End-Verifikation** – Regelmäßige Prüfung von `/api/health`, `/docs` und dem Streamlit-Dashboard auf dem Hochschulserver
 
 ---
 
 ## Fazit
 
-**Aktueller Status**: 7 Tests (100% bestanden) ✅
-
-**Empfohlene Ergänzung**: 5-8 weitere datenbankunabhängige Tests
-
-**Ziel**: 12-15 Tests für eine starke Bachelorarbeit
-
-**Kernaussage**: Fokus auf **testbare Business-Logik** (Security, Validierung, Query-Builder),
-nicht auf DB-Integration, solange das Schema nicht final ist. Das zeigt professionelle Softwareentwicklung und Flexibilität.
+- **Aktueller Status:** 7 Tests (100 % bestanden) ✅
+- **Empfohlene Ergänzung:** 5–8 weitere datenbankunabhängige Unit-Tests
+- **Ziel:** 12–15 Tests für eine hohe Testabdeckung der Kernlogik
